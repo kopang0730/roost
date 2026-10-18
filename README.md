@@ -107,7 +107,7 @@ How cloning, bundle ids, cookie injection, ticket exchange and FFlags work:
 ## Releasing (maintainers)
 
 ```bash
-# 1. update CHANGELOG.md and commit
+# 1. 写发布说明 docs/release-notes/v1.0.1.md，更新 CHANGELOG.md，提交
 git commit -am "release 1.0.1"
 
 # 2. tag and push — GitHub Actions builds the DMG and creates the Release
@@ -116,7 +116,8 @@ git push origin main --tags
 ```
 
 The workflow fetches the bundled Python, builds, packages the DMG, verifies the signature and
-the mount, then publishes the asset. You can also trigger it manually from the Actions tab
+the mount, then publishes the asset with the notes from `docs/release-notes/vX.Y.Z.md`
+(falling back to auto-generated notes if that file is missing). You can also trigger it manually from the Actions tab
 (`workflow_dispatch`) — that builds artifacts without creating a Release.
 
 ## Known limitations

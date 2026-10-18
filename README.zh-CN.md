@@ -104,7 +104,7 @@ cd app && ./build.sh          # 编译 + 打包 + 签名
 ## 发布新版本（维护者）
 
 ```bash
-# 1. 改 CHANGELOG.md，提交
+# 1. 写发布说明 docs/release-notes/v1.0.1.md，更新 CHANGELOG.md，提交
 git commit -am "release 1.0.1"
 
 # 2. 打 tag 并推送，GitHub Actions 会自动构建 DMG 并创建 Release
@@ -112,7 +112,8 @@ git tag v1.0.1
 git push origin main --tags
 ```
 
-Workflow 会跑：拉取内置 Python → 编译 → 打 DMG → 自检签名与挂载 → 上传 Release 附件。
+Workflow 会跑：拉取内置 Python → 编译 → 打 DMG → 自检签名与挂载 → 上传 Release 附件，
+正文取自 `docs/release-notes/vX.Y.Z.md`（没有这个文件时退回自动生成）。
 也可以在 Actions 页面手动 `workflow_dispatch` 输版本号构建（不会自动发 Release）。
 
 ## 已知限制

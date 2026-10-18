@@ -54,7 +54,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            "app/build/Roost-${{ steps.ver.outputs.version }}.dmg" \
-            --title "Roost ${GITHUB_REF_NAME}" \
-            --generate-notes
+          DMG="app/build/Roost-${{ steps.ver.outputs.version }}.dmg"
+          NOTES="docs/release-notes/${GITHUB_REF_NAME}.md"
+          if [ -f "$NOTES" ]; then
+            gh release create "${GITHUB_REF_NAME}" "$DMG" \
+              --title "Roost ${GITHUB_REF_NAME}" --notes-file "$NOTES"
+          else
+            echo "::warning::没有 $NOTES，退回自动生成说明"
+            gh release create "${GITHUB_REF_NAME}" "$DMG" \
+              --title "Roost ${GITHUB_REF_NAME}" --generate-notes
+          fi
