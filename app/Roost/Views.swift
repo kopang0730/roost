@@ -50,6 +50,17 @@ struct ContentView: View {
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
+                    store.tileWindows()
+                } label: {
+                    Label(L.t("平铺", "Tile"), systemImage: "rectangle.split.3x1")
+                        .labelStyle(.titleAndIcon)
+                }
+                .help(Text(L.t("把所有运行中的窗口重新排开", "Re-arrange every running window")))
+                .hoverHint(L.t("把运行中的实例重新铺成网格（需要辅助功能权限）", "Lay out running instances in a grid (needs Accessibility permission)"), store)
+                .disabled(store.running.isEmpty || store.busy != nil)
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
                     showPreview = true
                 } label: {
                     Label(L.t("预览", "Preview"), systemImage: "rectangle.inset.filled.and.person.filled")
@@ -134,6 +145,11 @@ struct ContentView: View {
                         .tag(a.name)
                         .contextMenu {
                             Button(L.t("启动", "Launch")) { store.selected = a.name; store.launch(a.name) }
+                            Button(L.t("聚焦窗口", "Focus window")) {
+                                store.selected = a.name
+                                store.focus(a.name)
+                            }
+                            .disabled(!store.isRunning(a.name))
                             Button(L.t("检查登录", "Check login")) { store.selected = a.name; store.check(a.name) }
                             Divider()
                             Button(L.t("重命名…", "Rename…")) { store.selected = a.name; renameTarget = a }
@@ -253,6 +269,7 @@ struct AccountDetail: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
+                if let u = store.appUpdate { appUpdateBanner(u) }
                 if let v = store.versionInfo, v.update || v.error != nil {
                     versionBanner(v)
                 }
@@ -332,6 +349,14 @@ struct AccountDetail: View {
                         .disabled(store.busy != nil)
 
                     Button {
+                        store.repair()
+                    } label: { Label(L.t("修复 Roblox", "Repair Roblox"), systemImage: "arrow.down.circle") }
+                        .help(Text(L.t("下载并安装官方 Roblox 客户端", "Download and install the official Roblox client")))
+                        .hoverHint(L.t("下载官方 Roblox（约 150 MB）并替换 /Applications 里的版本；需要先退出所有实例",
+                                       "Download the official Roblox (~150 MB) and replace the one in /Applications; quit all instances first"), store)
+                        .disabled(store.busy != nil)
+
+                    Button {
                         store.openInstances()
                     } label: { Label(L.t("副本目录", "Copies folder"), systemImage: "folder") }
                         .help(Text(L.t("在 Finder 打开副本目录", "Open the copies folder in Finder")))
@@ -353,6 +378,32 @@ struct AccountDetail: View {
     }
 
     @ViewBuilder
+    private func appUpdateBanner(_ u: UpdateInfo) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "sparkles").foregroundStyle(.blue)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(L.t("Roost \(u.latest) 已发布", "Roost \(u.latest) is available")).font(.caption)
+                Text(L.t("去 Releases 下载新的 DMG 覆盖安装即可，账号数据不受影响。",
+                         "Download the new DMG from Releases and replace the app — your accounts stay."))
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button(L.t("打开下载页", "Open release")) {
+                if let url = URL(string: u.url) { NSWorkspace.shared.open(url) }
+            }
+            .controlSize(.small)
+            Button {
+                store.appUpdate = nil
+            } label: { Image(systemName: "xmark") }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .background(Color.blue.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder
     private func versionBanner(_ v: VersionInfo) -> some View {
         HStack(spacing: 10) {
             Image(systemName: v.error != nil ? "wifi.exclamationmark" : "arrow.down.circle")
@@ -371,6 +422,9 @@ struct AccountDetail: View {
                 }
             }
             Spacer()
+            Button(L.t("修复 / 更新", "Repair / Update")) { store.repair() }
+                .controlSize(.small)
+                .disabled(store.busy != nil)
             Button(L.t("重新检查", "Recheck")) { store.checkVersion() }
                 .controlSize(.small)
         }

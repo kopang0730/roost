@@ -17,6 +17,7 @@ final class Store: ObservableObject {
     @Published var running: [RunningInstance] = []
     @Published var versionInfo: VersionInfo? = nil
     @Published var placeName: String? = nil
+    @Published var appUpdate: UpdateInfo? = nil
     @Published var presetGroups: [PresetGroup] = []
     @Published var managedKeys: [String] = []
 
@@ -38,6 +39,7 @@ final class Store: ObservableObject {
         RunLoop.main.add(pollTimer!, forMode: .common)
         refreshRunning()
         checkVersion()
+        checkAppUpdate()
     }
 
     func refreshRunning() {
@@ -80,6 +82,49 @@ final class Store: ObservableObject {
                     latest: res["latest"] as? String,
                     update: (res["update_available"] as? Bool) ?? false,
                     error: res["error"] as? String)
+            }
+        }
+    }
+
+    func checkAppUpdate() {
+        let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+        work.async {
+            let res = Py.call("update_check", ["version": current]) { _ in }
+            DispatchQueue.main.async {
+                guard (res["ok"] as? Bool) == true else { return }
+                let info = UpdateInfo(latest: res["latest"] as? String ?? "",
+                                      url: res["url"] as? String ?? "",
+                                      newer: (res["newer"] as? Bool) ?? false)
+                self.appUpdate = info.newer ? info : nil
+            }
+        }
+    }
+
+    func repair() {
+        perform(L.t("修复 Roblox…", "Repairing Roblox…")) { _ in
+            Py.call("repair") { self.logMain($0) }
+        } done: { res in
+            if res["ok"] as? Bool == true {
+                let v = (res["version"] as? String) ?? "?"
+                self.appendLog(L.t("✓ Roblox \(v) 已安装到 /Applications", "✓ Roblox \(v) installed in /Applications"))
+                self.checkVersion()
+                self.refresh()
+            }
+        }
+    }
+
+    func focus(_ name: String) {
+        work.async {
+            _ = Py.call("focus", ["name": name]) { _ in }
+        }
+    }
+
+    func tileWindows() {
+        perform(L.t("平铺窗口", "Tiling windows")) { _ in
+            Py.call("tile") { self.logMain($0) }
+        } done: { res in
+            if res["ok"] as? Bool == true {
+                self.appendLog(L.t("✓ 已平铺 \(res["tiled"] ?? 0) 个窗口", "✓ tiled \(res["tiled"] ?? 0) windows"))
             }
         }
     }
@@ -433,6 +478,12 @@ struct RunningInstance: Identifiable, Equatable {
     var startedAt: Int?
     var id: String { name }
     var pid: Int { pids.first ?? 0 }
+}
+
+struct UpdateInfo {
+    var latest: String
+    var url: String
+    var newer: Bool
 }
 
 struct VersionInfo {

@@ -38,6 +38,7 @@ import re
 import shutil
 import socket
 import subprocess
+import tempfile
 import sys
 import time
 import urllib.error
@@ -1023,6 +1024,151 @@ def _alive(pid):
     except Exception:
         return False
 
+
+UPDATES_URL = "https://api.github.com/repos/kopang0730/roost/releases/latest"
+
+
+def _download(url, dest, progress=None, chunk=1 << 20):
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    with urllib.request.urlopen(req, timeout=60) as r, open(dest, "wb") as f:
+        total = int(r.headers.get("Content-Length") or 0)
+        got = 0
+        last = -5
+        while True:
+            data = r.read(chunk)
+            if not data:
+                break
+            f.write(data)
+            got += len(data)
+            if total and progress:
+                pct = int(got * 100 / total)
+                if pct >= last + 5:
+                    last = pct
+                    progress("%d%%  %.0f / %.0f MB" % (pct, got / 1e6, total / 1e6))
+    return dest
+
+
+def _version_tuple(v):
+    out = []
+    for part in (v or "").lstrip("v").split("."):
+        try:
+            out.append(int(part))
+        except ValueError:
+            out.append(0)
+    return tuple(out)
+
+
+def check_update(current):
+    try:
+        d = _get_json(UPDATES_URL)
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:120]}
+    tag = (d.get("tag_name") or "").lstrip("v")
+    newer = bool(current and tag and _version_tuple(tag) > _version_tuple(current))
+    return {"ok": True, "latest": tag, "url": d.get("html_url"),
+            "notes": d.get("body") or "", "newer": newer}
+
+
+def focus_window(name):
+    pids = account_pids(name)
+    if not pids:
+        return False, T("没有运行中的实例", "no running instance")
+    script = ('tell application "System Events"\n'
+              '  set p to first process whose unix id is %d\n'
+              '  set frontmost of p to true\n'
+              'end tell') % pids[0]
+    r = run(["osascript", "-e", script])
+    if r.returncode == 0:
+        return True, "ok"
+    err = (r.stderr or "").strip().splitlines()
+    return False, (err[0] if err else "osascript failed")
+
+
+def tile_windows():
+    st = load_state()
+    alive = []
+    for name in sorted(st["accounts"]):
+        pids = account_pids(name)
+        if pids:
+            alive.append((name, pids[0]))
+    if not alive:
+        return {"ok": False, "error": T("没有运行中的实例", "no running instances")}
+    total = len(alive)
+    results = []
+    for i, (name, pid) in enumerate(alive):
+        prefs = st["accounts"].get(name, {}).get("prefs") or {}
+        try:
+            size = parse_size(prefs.get("size") or "1020x640")
+        except SystemExit:
+            size = (1020, 640)
+        pos = grid_position(i, total, size[0], size[1])
+        ok, msg = resize_window(pid, size, pos)
+        results.append({"name": name, "ok": ok, "detail": msg})
+    return {"ok": True, "tiled": len(results), "results": results}
+
+
+def repair_roblox(progress=None):
+    """下载官方 Roblox 客户端包（zip）并替换 /Applications/Roblox.app。"""
+    say(T("检查最新版本…", "Checking the latest version…"), C_DIM)
+    try:
+        info = _get_json(ROBLOX_VERSION_URL)
+    except Exception as e:
+        return {"ok": False, "error": T("取不到官方版本信息: %s" % e,
+                                        "cannot fetch the official version: %s" % e)}
+    upload = info.get("clientVersionUpload")
+    latest = info.get("version")
+    if not upload:
+        return {"ok": False, "error": T("官方接口没有返回下载版本号", "no download version returned")}
+
+    if run(["pgrep", "-f", "RobloxPlayer"]).stdout.strip():
+        return {"ok": False, "error": T(
+            "请先退出所有 Roblox 实例（包括本 App 启动的），再点修复",
+            "Quit every Roblox instance first (including ones launched here), then retry")}
+
+    if not os.access("/Applications", os.W_OK):
+        return {"ok": False, "error": T("/Applications 不可写，请用管理员账号运行",
+                                        "/Applications is not writable — run as an admin user")}
+
+    url = "https://setup.rbxcdn.com/mac/%s-RobloxPlayer.zip" % upload
+    say(T("下载（约 150 MB）", "Downloading (~150 MB) ") + url, C_DIM)
+    tmpdir = tempfile.mkdtemp(prefix="roost-repair-")
+    zip_path = os.path.join(tmpdir, "RobloxPlayer.zip")
+    try:
+        _download(url, zip_path, progress)
+        say(T("解压…", "Extracting…"), C_DIM)
+        r = run(["ditto", "-x", "-k", zip_path, tmpdir])
+        if r.returncode != 0:
+            return {"ok": False, "error": T("解压失败: %s" % r.stderr.strip()[:160],
+                                            "extract failed: %s" % r.stderr.strip()[:160])}
+        src = os.path.join(tmpdir, "RobloxPlayer.app")
+        if not os.path.isdir(src):
+            return {"ok": False, "error": T("包里没有 RobloxPlayer.app", "the zip has no RobloxPlayer.app")}
+        v = run(["/usr/libexec/PlistBuddy", "-c", "Print :CFBundleShortVersionString",
+                 os.path.join(src, "Contents", "Info.plist")]).stdout.strip()
+        if latest and v and v != latest:
+            return {"ok": False, "error": T("下载到的版本是 %s，官方最新是 %s，已中止" % (v, latest),
+                                            "downloaded %s but latest is %s — aborted" % (v, latest))}
+
+        dest = "/Applications/Roblox.app"
+        new = dest + ".roost-new"
+        old = dest + ".roost-old"
+        for p in (new, old):
+            if os.path.exists(p):
+                shutil.rmtree(p, ignore_errors=True)
+        say(T("安装到 /Applications…", "Installing into /Applications…"), C_DIM)
+        r = run(["ditto", src, new])
+        if r.returncode != 0:
+            return {"ok": False, "error": T("复制失败: %s" % r.stderr.strip()[:160],
+                                            "copy failed: %s" % r.stderr.strip()[:160])}
+        if os.path.exists(dest):
+            os.rename(dest, old)
+        os.rename(new, dest)
+        shutil.rmtree(old, ignore_errors=True)
+        say(T("完成：Roblox %s 已就位" % v, "Done: Roblox %s installed" % v), C_GRN)
+        return {"ok": True, "version": v, "path": dest}
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
 # ------------------------------------------------------------------ JSON API（给原生 app 用）
 
 def _api_args():
@@ -1391,6 +1537,21 @@ def cmd_api(argv):
                 return emit({"ok": True, "name": nm, "cached": False})
             except Exception as e:
                 return emit({"ok": False, "error": str(e)[:120]})
+
+        if verb == "focus":
+            ok, msg = focus_window(args.get("name"))
+            return emit({"ok": ok, "detail": msg})
+
+        if verb == "tile":
+            return emit(tile_windows())
+
+        if verb == "update_check":
+            return emit(check_update(args.get("version") or ""))
+
+        if verb == "repair":
+            def progress(line):
+                say("  " + line, C_DIM)
+            return emit(repair_roblox(progress))
 
         if verb == "open_instances":
             os.makedirs(INSTANCES, exist_ok=True)
