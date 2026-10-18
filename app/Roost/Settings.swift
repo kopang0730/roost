@@ -32,6 +32,22 @@ struct SettingsView: View {
     @AppStorage("showLog") private var showLog = false
     @Environment(\.dismiss) private var dismiss
 
+    @EnvironmentObject private var store: Store
+
+    private func permRow(_ title: String, granted: Bool,
+                         grant: @escaping () -> Void, open: @escaping () -> Void) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: granted ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(granted ? .green : .orange)
+            Text(title).font(.caption)
+            Spacer()
+            if !granted {
+                Button(L.t("授权", "Grant")) { grant() }.controlSize(.small)
+            }
+            Button(L.t("设置", "Settings")) { open() }.controlSize(.small)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
@@ -83,6 +99,18 @@ struct SettingsView: View {
                     Toggle(L.t("显示日志面板", "Show log panel"), isOn: $showLog)
                         .toggleStyle(.switch)
                         .controlSize(.small)
+
+                    Divider()
+
+                    Text(L.t("系统权限", "Permissions")).font(.caption).foregroundStyle(.secondary)
+                    permRow(L.t("辅助功能（调窗口大小/平铺/聚焦）", "Accessibility (resize / tile / focus)"),
+                            granted: store.axOK,
+                            grant: { Perm.requestAccessibility(); Perm.openAccessibility() },
+                            open: { Perm.openAccessibility() })
+                    permRow(L.t("屏幕录制（窗口预览）", "Screen Recording (previews)"),
+                            granted: store.screenOK,
+                            grant: { Perm.requestScreenRecording(); Perm.openScreenRecording() },
+                            open: { Perm.openScreenRecording() })
                 }
                 .padding(8)
             }

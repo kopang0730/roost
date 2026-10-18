@@ -18,6 +18,16 @@ final class Store: ObservableObject {
     @Published var versionInfo: VersionInfo? = nil
     @Published var placeName: String? = nil
     @Published var appUpdate: UpdateInfo? = nil
+    @Published var axOK = Perm.accessibility
+    @Published var screenOK = Perm.screenRecording
+    @Published var dismissedPerm: String? = UserDefaults.standard.string(forKey: "dismissedPerm") {
+        didSet { UserDefaults.standard.set(dismissedPerm, forKey: "dismissedPerm") }
+    }
+
+    func refreshPermissions() {
+        axOK = Perm.accessibility
+        screenOK = Perm.screenRecording
+    }
     @Published var presetGroups: [PresetGroup] = []
     @Published var managedKeys: [String] = []
 

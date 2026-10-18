@@ -128,7 +128,11 @@ struct ContentView: View {
         .overlay(alignment: .bottom) {
             HoverHintBar(text: store.hoverHint).padding(.bottom, 16)
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            store.refreshPermissions()
+        }
         .onAppear {
+            store.refreshPermissions()
             store.noteLanguageChange()
             if ProcessInfo.processInfo.environment["ROOST_OPEN_ADD"] == "1" { showAdd = true }
         }
@@ -269,6 +273,9 @@ struct AccountDetail: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
+                if !store.axOK && store.dismissedPerm != "ax" {
+                    PermissionBanner(kind: .accessibility)
+                }
                 if let u = store.appUpdate { appUpdateBanner(u) }
                 if let v = store.versionInfo, v.update || v.error != nil {
                     versionBanner(v)

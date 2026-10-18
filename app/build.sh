@@ -36,6 +36,7 @@ swiftc -O -swift-version 5 \
   "$HERE/Roost/Settings.swift" \
   "$HERE/Roost/HoverHint.swift" \
   "$HERE/Roost/LoginWeb.swift" \
+  "$HERE/Roost/Permissions.swift" \
   "$HERE/Roost/Preview.swift" \
   "$HERE/Roost/Py.swift" \
   "$HERE/Roost/Avatar.swift" \
@@ -78,10 +79,15 @@ if [ -d "$HELPER" ]; then
 fi
 
 # 内置 Python 运行时（arm64）：朋友的机器没装命令行工具也能跑
-if [ -x "$HERE/vendor/python-arm64/bin/python3" ]; then
+# 注意：运行时放在 ~/Library 下，不放仓库里 —— 仓库常在 iCloud，复制会卡在按需下载
+PY_RUNTIME="${ROOST_VENDOR:-$HOME/Library/Application Support/roost/vendor}/python-arm64"
+[ -x "$PY_RUNTIME/bin/python3" ] || PY_RUNTIME="$HERE/vendor/python-arm64"
+if [ -x "$PY_RUNTIME/bin/python3" ]; then
   echo "▸ 内置 Python 运行时"
   rm -rf "$BUNDLE/Contents/Resources/python"
-  cp -R "$HERE/vendor/python-arm64" "$BUNDLE/Contents/Resources/python"
+  ditto "$PY_RUNTIME" "$BUNDLE/Contents/Resources/python"
+else
+  echo "⚠ 没找到 Python 运行时，先跑 ./scripts/fetch-python.sh（app 会退回系统 python3）"
 fi
 
 echo "▸ 签名（ad-hoc）"

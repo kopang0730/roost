@@ -3,7 +3,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-DEST="$HERE/../app/vendor/python-arm64"
+DEST="${ROOST_VENDOR:-$HOME/Library/Application Support/roost/vendor}/python-arm64"
 PY_VERSION="3.12.15"
 BUILD_TAG="20261013"
 URL="https://github.com/astral-sh/python-build-standalone/releases/download/${BUILD_TAG}/cpython-${PY_VERSION}%2B${BUILD_TAG}-aarch64-apple-darwin-install_only.tar.gz"
