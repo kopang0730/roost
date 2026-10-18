@@ -1,12 +1,12 @@
 # 工作原理
 
-这份文档说明 ExoLocal 在二进制/系统层面做了什么，方便二次开发或排错。
+这份文档说明 Roost 在二进制/系统层面做了什么，方便二次开发或排错。
 
 ## 1. 组成
 
 ```
-ExoLocal.app (SwiftUI, ~41 MB)
- ├─ Contents/Resources/epmulti          核心逻辑（Python 单文件）
+Roost.app (SwiftUI, ~41 MB)
+ ├─ Contents/Resources/roost          核心逻辑（Python 单文件）
  ├─ Contents/Resources/python/          内置 CPython 3.12（arm64，裁剪版）
  └─ Contents/Resources/helper/CookieJar.app   预编译的 cookie 写入器
 ```
@@ -14,7 +14,7 @@ ExoLocal.app (SwiftUI, ~41 MB)
 界面通过 JSON-over-stdio 调 Python：
 
 ```
-swift  →  /usr/bin/env python3  epmulti  api <verb>
+swift  →  /usr/bin/env python3  roost  api <verb>
           stdin: JSON 参数   stdout: 一行 JSON 结果   stderr: 实时日志
 ```
 
@@ -82,6 +82,8 @@ POST https://auth.roblox.com/v1/authentication-ticket/
 所以不会影响你自己正常开的 Roblox。
 
 ## 7. 状态与凭据
+
+> 内部路径沿用 `epmulti`（历史原因），用户可见的名字都是 Roost。这样改名不会丢账号。
 
 | 内容 | 位置 |
 |---|---|

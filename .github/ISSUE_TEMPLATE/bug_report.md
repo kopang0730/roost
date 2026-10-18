@@ -8,7 +8,7 @@ labels: bug
 **环境**
 - macOS 版本：
 - 芯片（Apple M? / Intel）：
-- ExoLocal 版本（设置里或 DMG 文件名）：
+- Roost 版本（设置里或 DMG 文件名）：
 - Roblox 版本（`/Applications/Roblox.app` 的版本）：
 
 **问题描述**

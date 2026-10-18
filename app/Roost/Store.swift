@@ -20,7 +20,7 @@ final class Store: ObservableObject {
     @Published var presetGroups: [PresetGroup] = []
     @Published var managedKeys: [String] = []
 
-    private let work = DispatchQueue(label: "epmulti.work", qos: .userInitiated)
+    private let work = DispatchQueue(label: "roost.work", qos: .userInitiated)
 
     private var pollTimer: Timer?
 

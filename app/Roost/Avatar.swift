@@ -7,7 +7,7 @@ final class AvatarStore {
 
     private var memory: [Int: NSImage] = [:]
     private var inFlight = Set<Int>()
-    private let queue = DispatchQueue(label: "epmulti.avatar", qos: .utility)
+    private let queue = DispatchQueue(label: "roost.avatar", qos: .utility)
     private let dir: URL
 
     private init() {

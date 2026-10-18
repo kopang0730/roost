@@ -47,11 +47,11 @@ enum Py {
     /// 优先用 app 包里的脚本，方便整体拷走；找不到再退回开发路径。
     static var scriptPath: String {
         if let res = Bundle.main.resourceURL {
-            let p = res.appendingPathComponent("epmulti").path
+            let p = res.appendingPathComponent("roost").path
             if FileManager.default.isExecutableFile(atPath: p) { return p }
         }
-        return NSString(string: "~/Documents/deepseek-harness/default-workspace/exopanda-local/epmulti")
-            .expandingTildeInPath
+        // 开发模式：用 ROOST_CLI 指向仓库里的 roost
+        return ProcessInfo.processInfo.environment["ROOST_CLI"] ?? ""
     }
 
     /// 优先用 app 内置的 Python（朋友机器上不需要装命令行工具）
@@ -76,13 +76,16 @@ enum Py {
     static func call(_ verb: String,
                      _ args: [String: Any] = [:],
                      onLog: @escaping (String) -> Void) -> [String: Any] {
+        guard !scriptPath.isEmpty else {
+            return ["ok": false, "error": "CLI not found (set ROOST_CLI)"]
+        }
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: pythonPath)
         proc.arguments = [scriptPath, "api", verb]
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = shellPath()
         env["PYTHONUNBUFFERED"] = "1"
-        env["EPMULTI_LANG"] = L.lang
+        env["ROOST_LANG"] = L.lang
         proc.environment = env
 
         let inPipe = Pipe(), outPipe = Pipe(), errPipe = Pipe()
@@ -101,7 +104,7 @@ enum Py {
 
         // stderr 逐行流到日志
         let errHandle = errPipe.fileHandleForReading
-        let queue = DispatchQueue(label: "epmulti.stderr")
+        let queue = DispatchQueue(label: "roost.stderr")
         queue.async {
             var buffer = Data()
             while true {

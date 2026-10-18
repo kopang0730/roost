@@ -1,11 +1,11 @@
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
 """
-epmulti — 本地 Roblox 多开器（免登录 / 免授权校验 / 带 GUI）
+roost — 本地 Roblox 多开器（免登录 / 免授权校验 / 带 GUI）
 
 零登录   直接复用本机 Roblox 客户端已有的 .ROBLOSECURITY；加号时粘贴一次会话串即可。
 零授权   不联系 exopanda.com，不读 keystate.json，不改原 app。
-零依赖   只用 macOS 自带 python3 + clang + security + codesign + PlistBuddy。
+零依赖   只要 macOS。app 里内置了 Python 运行时和预编译的 cookie 助手。
 
 多开原理
   Roblox.app 的 LSMultipleInstancesProhibited = true，同 bundle id 只能跑一个。
@@ -13,18 +13,18 @@ epmulti — 本地 Roblox 多开器（免登录 / 免授权校验 / 带 GUI）
   再用账号会话换 rbx-authentication-ticket，最后把 roblox-player: 深链交给该副本。
 
 用法
-  epmulti doctor
-  epmulti accounts add --name main --from-local
-  epmulti accounts add --name alt  --cookie-stdin
-  epmulti accounts add --name alt  --from-clipboard   # 先把会话串复制到剪贴板
-  epmulti accounts list | rm NAME
-  epmulti check NAME
-  epmulti flags NAME                       # 看该账号的 FFlags
-  epmulti flags NAME --set DFIntX=1 --unset FFlagY --clear
-  epmulti launch NAME [--place ID] [--fps 60] [--size 1020x640] [--dry-run]
-  epmulti launch --all --place ID
-  epmulti gui                              # 本地 GUI（127.0.0.1，token 保护）
-  epmulti clean [--keep-copies]
+  roost doctor
+  roost accounts add --name main --from-local
+  roost accounts add --name alt  --cookie-stdin
+  roost accounts add --name alt  --from-clipboard   # 先把会话串复制到剪贴板
+  roost accounts list | rm NAME
+  roost check NAME
+  roost flags NAME                       # 看该账号的 FFlags
+  roost flags NAME --set DFIntX=1 --unset FFlagY --clear
+  roost launch NAME [--place ID] [--fps 60] [--size 1020x640] [--dry-run]
+  roost launch --all --place ID
+  roost gui                              # 本地 GUI（127.0.0.1，token 保护）
+  roost clean [--keep-copies]
 """
 
 import base64
@@ -61,7 +61,7 @@ WHOAMI_URL = "https://users.roblox.com/v1/users/authenticated"
 
 C_DIM, C_RED, C_GRN, C_YEL, C_OFF = "\033[2m", "\033[31m", "\033[32m", "\033[33m", "\033[0m"
 MENUBAR_H = 28
-LANG = (os.environ.get("EPMULTI_LANG") or "zh").strip().lower()
+LANG = (os.environ.get("ROOST_LANG") or os.environ.get("EPMULTI_LANG") or "zh").strip().lower()
 EN = LANG.startswith("en")
 
 
@@ -257,7 +257,7 @@ def ensure_helper():
     os.makedirs(os.path.join(app, "Contents", "MacOS"), exist_ok=True)
     open(JAR_SRC, "w").write(JAR_SOURCE)
     info = {
-        "CFBundleIdentifier": "com.epmulti.cookiejar",
+        "CFBundleIdentifier": "com.roost.cookiejar",
         "CFBundleName": "CookieJar",
         "CFBundleExecutable": "CookieJar",
         "CFBundlePackageType": "APPL",
@@ -382,7 +382,7 @@ def instance_app(name):
 
 
 def instance_ready(name):
-    marker = os.path.join(instance_dir(name), ".epmulti-ready")
+    marker = os.path.join(instance_dir(name), ".roost-ready")
     if not (os.path.isdir(instance_app(name)) and os.path.exists(marker)):
         return False
     try:
@@ -443,7 +443,7 @@ def ensure_instance(name, flags=None, fps=None, quiet=False):
         die(T("重签失败: ", "re-sign failed: ") + (r.stderr or "").strip())
     json.dump({"bundle_id": bundle_id_for(name), "src_version": src_version(),
                "created": int(time.time())},
-              open(os.path.join(d, ".epmulti-ready"), "w"))
+              open(os.path.join(d, ".roost-ready"), "w"))
     return app
 
 
@@ -613,7 +613,7 @@ def cmd_accounts(argv):
     st = load_state()
     if not argv or argv[0] in ("list", "ls"):
         if not st["accounts"]:
-            say("还没有账号：epmulti accounts add --name main --from-local")
+            say("还没有账号：roost accounts add --name main --from-local")
             return
         for n, a in sorted(st["accounts"].items()):
             print("%-14s u%-12s %-20s" % (n, a.get("user_id", "?"), a.get("username", "?")))
@@ -662,7 +662,7 @@ def cmd_accounts(argv):
 
     elif sub in ("rm", "remove", "del"):
         if len(argv) < 2:
-            die("用法: epmulti accounts rm NAME")
+            die("用法: roost accounts rm NAME")
         name = argv[1]
         st["accounts"].pop(name, None)
         save_state(st)
@@ -676,7 +676,7 @@ def cmd_accounts(argv):
 
 def cmd_check(argv):
     if not argv:
-        die("用法: epmulti check NAME")
+        die("用法: roost check NAME")
     name = argv[0]
     cookie = kc_get(name)
     if not cookie:
@@ -693,7 +693,7 @@ def cmd_check(argv):
 
 def cmd_flags(argv):
     if not argv:
-        die("用法: epmulti flags NAME [--set K=V] [--unset K] [--clear]")
+        die("用法: roost flags NAME [--set K=V] [--unset K] [--clear]")
     name = argv[0]
     st = load_state()
     acct = st["accounts"].get(name)
@@ -746,7 +746,7 @@ def parse_size(s):
 def cmd_launch(argv):
     st = load_state()
     if not st["accounts"]:
-        die("还没有账号：epmulti accounts add --name main --from-local")
+        die("还没有账号：roost accounts add --name main --from-local")
     place, size, fps, dry, names, snap = None, None, None, False, [], True
     i = 0
     while i < len(argv):
@@ -1178,7 +1178,7 @@ def cmd_api(argv):
                 run(["/usr/libexec/PlistBuddy", "-c",
                      "Set :CFBundleName Roblox (" + new + ")", plist])
                 run(["codesign", "--force", "--deep", "-s", "-", app])
-                marker = os.path.join(new_dir, ".epmulti-ready")
+                marker = os.path.join(new_dir, ".roost-ready")
                 try:
                     m = json.load(open(marker))
                     m["bundle_id"] = bundle_id_for(new)
@@ -1409,7 +1409,7 @@ def cmd_api(argv):
 # ------------------------------------------------------------------ GUI
 
 GUI_HTML = r"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
-<title>epmulti</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Roost</title><meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
 *{box-sizing:border-box}body{margin:0;background:#0E0E10;color:#fff;font:14px/1.6 -apple-system,system-ui}
 .wrap{max-width:820px;margin:0 auto;padding:28px 20px 60px}
@@ -1425,7 +1425,7 @@ button.primary{background:#2563eb;border-color:#2563eb}button.primary:hover{back
 button.danger{background:#3b1d1d;border-color:#5b2a2a;color:#ffb4b4}
 pre{background:#121214;border:1px solid #242529;border-radius:8px;padding:10px;overflow:auto;max-height:320px;font-size:12px}
 </style></head><body><div class="wrap">
-<h1>epmulti <span>本地 Roblox 多开 · 免登录</span></h1>
+<h1>Roost <span>本地 Roblox 多开 · 免登录</span></h1>
 <div class="card">
   <div class="row"><input id="place" placeholder="placeId（可留空，只开客户端首页）">
   <input id="size" placeholder="窗口 1020x640" style="max-width:170px">

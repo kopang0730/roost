@@ -1,10 +1,10 @@
 #!/bin/bash
-# 构建 ExoLocal.app —— 原生 SwiftUI 前端，逻辑仍然走同目录的 epmulti
+# 构建 Roost.app —— 原生 SwiftUI 前端，逻辑仍然走同目录的 roost
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-APP_NAME="ExoLocal"
+APP_NAME="Roost"
 VERSION="${VERSION:-1.0.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
 BUILD="$HERE/build"
@@ -29,27 +29,27 @@ swiftc -O -swift-version 5 \
   -target arm64-apple-macos13.0 \
   -framework SwiftUI -framework AppKit -framework WebKit -framework ScreenCaptureKit \
   -o "$BUNDLE/Contents/MacOS/$APP_NAME" \
-  "$HERE/ExoLocal/ExoLocalApp.swift" \
-  "$HERE/ExoLocal/L10n.swift" \
-  "$HERE/ExoLocal/Settings.swift" \
-  "$HERE/ExoLocal/HoverHint.swift" \
-  "$HERE/ExoLocal/LoginWeb.swift" \
-  "$HERE/ExoLocal/Preview.swift" \
-  "$HERE/ExoLocal/Py.swift" \
-  "$HERE/ExoLocal/Avatar.swift" \
-  "$HERE/ExoLocal/Store.swift" \
-  "$HERE/ExoLocal/Presets.swift" \
-  "$HERE/ExoLocal/Views.swift"
+  "$HERE/Roost/RoostApp.swift" \
+  "$HERE/Roost/L10n.swift" \
+  "$HERE/Roost/Settings.swift" \
+  "$HERE/Roost/HoverHint.swift" \
+  "$HERE/Roost/LoginWeb.swift" \
+  "$HERE/Roost/Preview.swift" \
+  "$HERE/Roost/Py.swift" \
+  "$HERE/Roost/Avatar.swift" \
+  "$HERE/Roost/Store.swift" \
+  "$HERE/Roost/Presets.swift" \
+  "$HERE/Roost/Views.swift"
 
 echo "▸ 打包"
 cat > "$BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>CFBundleName</key><string>ExoLocal</string>
-  <key>CFBundleDisplayName</key><string>ExoLocal</string>
-  <key>CFBundleIdentifier</key><string>com.epmulti.exolocal</string>
-  <key>CFBundleExecutable</key><string>ExoLocal</string>
+  <key>CFBundleName</key><string>Roost</string>
+  <key>CFBundleDisplayName</key><string>Roost</string>
+  <key>CFBundleIdentifier</key><string>com.roost.app</string>
+  <key>CFBundleExecutable</key><string>Roost</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
@@ -62,11 +62,11 @@ cat > "$BUNDLE/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 
-cp "$ROOT/epmulti" "$BUNDLE/Contents/Resources/epmulti"
-chmod +x "$BUNDLE/Contents/Resources/epmulti"
+cp "$ROOT/roost" "$BUNDLE/Contents/Resources/roost"
+chmod +x "$BUNDLE/Contents/Resources/roost"
 
 # 预编译 cookie 写入器，省掉对 clang 的依赖
-"$ROOT/epmulti" api state >/dev/null 2>&1 || true
+"$ROOT/roost" api state >/dev/null 2>&1 || true
 HELPER="$HOME/Library/Application Support/epmulti/bin/CookieJar.app"
 if [ -d "$HELPER" ]; then
   echo "▸ 打包 cookie 助手"

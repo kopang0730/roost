@@ -1,4 +1,4 @@
-# ExoLocal
+# Roost
 
 **本地 Roblox 多开器** — 内嵌官方登录、多账号隔离、逐号 FFlag、窗口预览。
 纯本地运行，没有账号体系，不联网校验授权。
@@ -11,11 +11,11 @@
 
 ## 下载安装
 
-1. 到 [Releases](../../releases/latest) 下载 `ExoLocal-x.y.z.dmg`
-2. 打开 DMG，把 `ExoLocal.app` 拖进 `Applications`
+1. 到 [Releases](../../releases/latest) 下载 `Roost-x.y.z.dmg`
+2. 打开 DMG，把 `Roost.app` 拖进 `Applications`
 3. **第一次打开会被系统拦**（本仓库没有 Apple 开发者签名），任选一种：
    - 在「应用程序」里右键 → 打开 → 再点「打开」
-   - 或终端执行 `xattr -dr com.apple.quarantine /Applications/ExoLocal.app`
+   - 或终端执行 `xattr -dr com.apple.quarantine /Applications/Roost.app`
    - 或 系统设置 → 隐私与安全性 → 底部「仍要打开」
 
 **要求**：macOS 13+，Apple 芯片（M1/M2/M3/M4）。Intel Mac 暂不支持。
@@ -55,7 +55,7 @@
 ## 隐私
 
 - 会话存在 **macOS 钥匙串**（`svce=epmulti`），账号元数据在 `~/Library/Application Support/epmulti`
-- 没有 ExoLocal 账号，没有服务器，不上传任何数据
+- 没有 Roost 账号，没有服务器，不上传任何数据
 - 登录页就是 Roblox 官方页面，密码不经过本程序
 
 ---
@@ -63,9 +63,9 @@
 ## 开发
 
 ```
-epmulti                  # 核心逻辑：账号 / 多开 / 会话 / FFlag / JSON API（Python）
+roost                    # 核心逻辑：账号 / 多开 / 会话 / FFlag / JSON API（Python）
 app/
-  ExoLocal/*.swift       # SwiftUI 界面
+  Roost/*.swift       # SwiftUI 界面
   build.sh               # 编译 + 打包 + 签名
   make-dmg.sh            # 出 DMG
   make_icon.swift        # 现场画图标
@@ -77,16 +77,16 @@ scripts/fetch-python.sh  # 拉取内置 Python 运行时（裁剪版）
 
 ```bash
 ./scripts/fetch-python.sh     # 只需一次，约 25 MB 下载
-cd app && ./build.sh          # → app/build/ExoLocal.app
-./make-dmg.sh 1.0.0           # → app/build/ExoLocal-1.0.0.dmg
+cd app && ./build.sh          # → app/build/Roost.app
+./make-dmg.sh 1.0.0           # → app/build/Roost-1.0.0.dmg
 ```
 
 命令行直接用（不装 app 也行）：
 
 ```bash
-./epmulti doctor
-./epmulti accounts add --name main --from-local
-./epmulti launch main --place 13127800756 --fps 60
+./roost doctor
+./roost accounts add --name main --from-local
+./roost launch main --place 13127800756 --fps 60
 ```
 
 架构细节（克隆、改 bundle id、cookie 注入、票据交换、FFlag 路径）见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。

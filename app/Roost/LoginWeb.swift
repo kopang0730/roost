@@ -4,7 +4,7 @@ import os
 
 /// 内嵌 Roblox 官方登录页，登录完成后自动抓 .ROBLOSECURITY。
 /// 用 non-persistent 的 WKWebsiteDataStore：每次添加都是干净的，不残留上一个账号。
-private let log = Logger(subsystem: "com.epmulti.exolocal", category: "webview")
+private let log = Logger(subsystem: "com.roost.app", category: "webview")
 
 final class LoginSession: NSObject, ObservableObject, WKNavigationDelegate {
     @Published var status: String = L.t("正在打开 Roblox 登录页…", "Opening the Roblox login page…")

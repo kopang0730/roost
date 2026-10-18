@@ -2,7 +2,11 @@
 
 ## 1.0.0
 
-首个可分发版本。
+首个可分发版本。项目更名为 **Roost**（原 ExoLocal）。
+
+- 应用名 `Roost.app`，bundle id `com.roost.app`
+- 命令行入口 `roost`（README 里的 `./roost`）
+- 内部存储路径与 Keychain 服务仍沿用 `epmulti`，老账号不受影响
 
 ### 功能
 - 内嵌 Roblox 官方登录页，登录完成自动抓取会话并入库，无需手动找 cookie

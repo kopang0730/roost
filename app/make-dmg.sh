@@ -5,28 +5,28 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 VERSION="${1:-${VERSION:-1.0.0}}"
 export VERSION
-DMG="$HERE/build/ExoLocal-$VERSION.dmg"
+DMG="$HERE/build/Roost-$VERSION.dmg"
 
 "$HERE/build.sh"
 echo "▸ 组装 DMG 内容"
 STAGE="$(mktemp -d)"
-cp -R "$HERE/build/ExoLocal.app" "$STAGE/"
+cp -R "$HERE/build/Roost.app" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 cat > "$STAGE/第一次打开看这里.txt" <<'TXT'
-ExoLocal —— 本地 Roblox 多开器
+Roost —— 本地 Roblox 多开器
 ==============================
 
 安装
 ----
-把 ExoLocal.app 拖到右边的 Applications 文件夹里。
+把 Roost.app 拖到右边的 Applications 文件夹里。
 
 第一次打开会被系统拦住（这个 app 没有苹果开发者签名）
 --------------------------------------------------------
 出现「无法打开，因为无法验证开发者」时，任选一种：
 
-  1) 在「应用程序」里右键 ExoLocal.app → 打开 → 再点「打开」
+  1) 在「应用程序」里右键 Roost.app → 打开 → 再点「打开」
   2) 或者打开「终端」，执行：
-       xattr -dr com.apple.quarantine /Applications/ExoLocal.app
+       xattr -dr com.apple.quarantine /Applications/Roost.app
      然后再双击打开
 
   系统设置 → 隐私与安全性 → 底部「仍要打开」也可以。
@@ -53,7 +53,7 @@ ExoLocal —— 本地 Roblox 多开器
 TXT
 rm -f "$DMG"
 echo "▸ 生成 DMG"
-hdiutil create -volname "ExoLocal $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
+hdiutil create -volname "Roost $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
 rm -rf "$STAGE"
 echo "✓ $DMG"
 ls -lh "$DMG" | awk '{print "  体积: "$5}'

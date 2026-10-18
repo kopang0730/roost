@@ -36,17 +36,17 @@ jobs:
 
       - name: 自检
         run: |
-          codesign --verify --deep --strict "app/build/ExoLocal.app"
-          hdiutil attach "app/build/ExoLocal-${{ steps.ver.outputs.version }}.dmg" -nobrowse -quiet
-          test -d "/Volumes/ExoLocal ${{ steps.ver.outputs.version }}/ExoLocal.app"
-          hdiutil detach "/Volumes/ExoLocal ${{ steps.ver.outputs.version }}" -quiet
-          ls -lh "app/build/ExoLocal-${{ steps.ver.outputs.version }}.dmg"
+          codesign --verify --deep --strict "app/build/Roost.app"
+          hdiutil attach "app/build/Roost-${{ steps.ver.outputs.version }}.dmg" -nobrowse -quiet
+          test -d "/Volumes/Roost ${{ steps.ver.outputs.version }}/Roost.app"
+          hdiutil detach "/Volumes/Roost ${{ steps.ver.outputs.version }}" -quiet
+          ls -lh "app/build/Roost-${{ steps.ver.outputs.version }}.dmg"
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
-          name: ExoLocal-dmg
-          path: app/build/ExoLocal-*.dmg
+          name: Roost-dmg
+          path: app/build/Roost-*.dmg
 
       - name: 发布 Release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -54,6 +54,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${GITHUB_REF_NAME}" \
-            "app/build/ExoLocal-${{ steps.ver.outputs.version }}.dmg" \
-            --title "ExoLocal ${GITHUB_REF_NAME}" \
+            "app/build/Roost-${{ steps.ver.outputs.version }}.dmg" \
+            --title "Roost ${GITHUB_REF_NAME}" \
             --generate-notes

@@ -119,7 +119,7 @@ struct ContentView: View {
         }
         .onAppear {
             store.noteLanguageChange()
-            if ProcessInfo.processInfo.environment["EXOLOCAL_OPEN_ADD"] == "1" { showAdd = true }
+            if ProcessInfo.processInfo.environment["ROOST_OPEN_ADD"] == "1" { showAdd = true }
         }
     }
 

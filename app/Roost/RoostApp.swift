@@ -1,14 +1,14 @@
 import SwiftUI
 
 @main
-struct ExoLocalApp: App {
+struct RoostApp: App {
     @StateObject private var store = Store()
     @AppStorage("lang") private var lang = "zh"
     @AppStorage("appearance") private var appearance = "system"
     @AppStorage("accent") private var accent = "blue"
 
     var body: some Scene {
-        WindowGroup("ExoLocal", id: "main") {
+        WindowGroup("Roost", id: "main") {
             ContentView()
                 .environmentObject(store)
                 .frame(minWidth: 940, minHeight: 600)
@@ -54,10 +54,10 @@ struct MenuBarContent: View {
             Divider()
             Button(L.t("全部启动", "Launch all")) { store.launchAll() }
             Divider()
-            Button(L.t("打开 ExoLocal 窗口", "Open ExoLocal window")) { showWindow() }
+            Button(L.t("打开 Roost 窗口", "Open Roost window")) { showWindow() }
         }
         Divider()
-        Button(L.t("退出 ExoLocal", "Quit ExoLocal")) { NSApplication.shared.terminate(nil) }
+        Button(L.t("退出 Roost", "Quit Roost")) { NSApplication.shared.terminate(nil) }
     }
 
     private func showWindow() {
