@@ -18,6 +18,8 @@ struct ContentView: View {
         } detail: {
             detail
         }
+        .disabled(store.showOnboarding || store.tourActive)
+        .accessibilityHidden(store.showOnboarding || store.tourActive)
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
                 Button {
@@ -28,6 +30,7 @@ struct ContentView: View {
                 }
                 .help(Text(L.t("重新读取账号与运行环境", "Reload accounts and environment")))
                 .hoverHint(L.t("重新读取账号与运行环境（⌘R）", "Reload accounts and environment (⌘R)"), store)
+                .disabled(store.showOnboarding || store.tourActive)
 
                 Button {
                     showAdd = true
@@ -37,6 +40,7 @@ struct ContentView: View {
                 }
                 .help(Text(L.t("添加一个 Roblox 账号", "Add a Roblox account")))
                 .hoverHint(L.t("添加一个 Roblox 账号：粘贴会话串，或用本机已登录的会话", "Add a Roblox account: paste a session string or use the local session"), store)
+                .disabled(store.showOnboarding || store.tourActive)
 
                 Button {
                     store.launchAll()
@@ -46,7 +50,7 @@ struct ContentView: View {
                 }
                 .help(Text(L.t("按当前 placeId / 尺寸 / fps 启动所有账号", "Launch every account with the current placeId / size / fps")))
                 .hoverHint(L.t("用当前 placeId / 窗口尺寸 / fps 启动所有账号", "Launch every account with the current placeId / size / fps"), store)
-                .disabled(store.accounts.isEmpty || store.busy != nil)
+                .disabled(store.accounts.isEmpty || store.busy != nil || store.showOnboarding || store.tourActive)
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -57,7 +61,7 @@ struct ContentView: View {
                 }
                 .help(Text(L.t("把所有运行中的窗口重新排开", "Re-arrange every running window")))
                 .hoverHint(L.t("把运行中的实例重新铺成网格（需要辅助功能权限）", "Lay out running instances in a grid (needs Accessibility permission)"), store)
-                .disabled(store.running.isEmpty || store.busy != nil)
+                .disabled(store.running.isEmpty || store.busy != nil || store.showOnboarding || store.tourActive)
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -68,7 +72,7 @@ struct ContentView: View {
                 }
                 .help(Text(L.t("看每个运行中窗口的画面", "See every running window")))
                 .hoverHint(L.t("实时缩略图：每个运行中的实例一屏看全（需要屏幕录制权限）", "Live thumbnails of every running instance (needs Screen Recording permission)"), store)
-                .disabled(store.running.isEmpty)
+                .disabled(store.running.isEmpty || store.showOnboarding || store.tourActive)
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -79,6 +83,7 @@ struct ContentView: View {
                 }
                 .help(Text(L.t("语言、外观、强调色", "Language, appearance, accent color")))
                 .hoverHint(L.t("设置：语言 / 外观 / 强调色 / 日志面板", "Settings: language, appearance, accent color, log panel"), store)
+                .disabled(store.showOnboarding || store.tourActive)
             }
             ToolbarItem(placement: .status) {
                 HStack(spacing: 8) {
@@ -94,6 +99,7 @@ struct ContentView: View {
                     }
                     .help(Text(L.t("显示 / 隐藏输出", "Show / hide output")))
                     .hoverHint(L.t("展开 / 收起底部输出面板", "Show / hide the bottom output panel"), store)
+                    .disabled(store.showOnboarding || store.tourActive)
                 }
             }
         }
@@ -117,7 +123,7 @@ struct ContentView: View {
             Button(L.t("取消", "Cancel"), role: .cancel) { deleteTarget = nil }
         }
         .sheet(isPresented: $showSettings) {
-            SettingsView()
+            SettingsView().environmentObject(store)
         }
         .sheet(isPresented: $showAdd) {
             AddAccountView().environmentObject(store)
@@ -128,12 +134,28 @@ struct ContentView: View {
         .overlay(alignment: .bottom) {
             HoverHintBar(text: store.hoverHint).padding(.bottom, 16)
         }
+        .overlay {
+            if store.showOnboarding { OnboardingView().environmentObject(store) }
+        }
+        .overlayPreferenceValue(TourAnchorKey.self) { anchors in
+            if store.tourActive { TourOverlay(anchors: anchors).environmentObject(store) }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             store.refreshPermissions()
+            Perm.prepareAutomationChecks { store.refreshPermissions() }
         }
         .onAppear {
             store.refreshPermissions()
             store.noteLanguageChange()
+            // 开发/支持用：ROOST_TOUR=1 直接进入教程，ROOST_TOUR_STEP=n 跳到第 n 步
+            let env = ProcessInfo.processInfo.environment
+            if env["ROOST_TOUR"] == "1" {
+                store.showOnboarding = false
+                store.startTour()
+                if let n = Int(env["ROOST_TOUR_STEP"] ?? ""), n >= 0, n < TourScript.steps.count {
+                    store.tourStep = n
+                }
+            }
             if ProcessInfo.processInfo.environment["ROOST_OPEN_ADD"] == "1" { showAdd = true }
         }
     }
@@ -175,9 +197,20 @@ struct ContentView: View {
             }
         }
         .listStyle(.sidebar)
+        .tourAnchor("sidebar")
         .safeAreaInset(edge: .bottom) {
             VStack(alignment: .leading, spacing: 4) {
                 Divider()
+                Button { showAdd = true } label: {
+                    Label(L.t("添加账号", "Add account"), systemImage: "plus.circle")
+                }
+                .buttonStyle(.plain).font(.callout)
+                .padding(.vertical, 4).tourAnchor("add")
+                Button { showSettings = true } label: {
+                    Label(L.t("设置与教程", "Settings & tutorial"), systemImage: "gearshape")
+                }
+                .buttonStyle(.plain).font(.callout)
+                .padding(.vertical, 6).tourAnchor("help")
                 HStack(spacing: 6) {
                     Image(systemName: store.status.localSession ? "checkmark.seal.fill" : "xmark.seal")
                         .foregroundStyle(store.status.localSession ? .green : .red)
@@ -198,7 +231,9 @@ struct ContentView: View {
 
     @ViewBuilder
     private var detail: some View {
-        if let acct = store.current {
+        if store.tourActive && store.tourUsesExample {
+            AccountDetail(account: TourScript.exampleAccount)
+        } else if let acct = store.current {
             AccountDetail(account: acct).id(acct.name)
         } else {
             VStack(spacing: 12) {
@@ -206,10 +241,8 @@ struct ContentView: View {
                     .font(.system(size: 46, weight: .light))
                     .foregroundStyle(.tertiary)
                 Text(L.t("从右上角 + 添加一个 Roblox 账号", "Use + in the toolbar to add a Roblox account")).foregroundStyle(.secondary)
-                if store.status.localSession {
-                    Button(L.t("用本机会话快速添加", "Quick add from local session")) { showAdd = true }
-                        .buttonStyle(.borderedProminent)
-                }
+                Button(L.t("添加账号", "Add account")) { showAdd = true }
+                    .buttonStyle(.borderedProminent)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -270,26 +303,43 @@ struct AccountDetail: View {
     @State private var confirmDelete = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                header
-                if !store.axOK && store.dismissedPerm != "ax" {
-                    PermissionBanner(kind: .accessibility)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    header
+                    if !store.axOK && store.dismissedPerm != "ax" {
+                        PermissionBanner(kind: .accessibility)
+                    }
+                    if let u = store.appUpdate { appUpdateBanner(u) }
+                    if let v = store.versionInfo, v.update || v.error != nil {
+                        versionBanner(v)
+                    }
+                    launchBox.tourAnchor("launch").id("launch")
+                    PresetSection(account: account).id("presets")
+                    RawFlagsEditor(account: account)
+                    maintenanceBox.tourAnchor("maintenance").id("maintenance")
                 }
-                if let u = store.appUpdate { appUpdateBanner(u) }
-                if let v = store.versionInfo, v.update || v.error != nil {
-                    versionBanner(v)
-                }
-                launchBox
-                PresetSection(account: account)
-                RawFlagsEditor(account: account)
-                maintenanceBox
+                .padding(20)
             }
-            .padding(20)
+            .onChange(of: store.tourStep) { _ in
+                scrollForTour(proxy)
+            }
+            .onChange(of: store.tourActive) { active in
+                if active { scrollForTour(proxy) }
+            }
+            .onAppear { scrollForTour(proxy) }
         }
         .confirmationDialog(L.t("删除 \(account.name)？会话与副本都会一起删掉。", "Delete \(account.name)? Its session and copy will be removed."),
                             isPresented: $confirmDelete, titleVisibility: .visible) {
             Button(L.t("删除", "Delete"), role: .destructive) { store.remove(account.name) }
+        }
+    }
+
+    private func scrollForTour(_ proxy: ScrollViewProxy) {
+        guard store.tourActive else { return }
+        let step = TourScript.steps[min(store.tourStep, TourScript.steps.count - 1)]
+        if ["launch", "presets", "maintenance"].contains(step.anchor) {
+            proxy.scrollTo(step.anchor, anchor: .top)
         }
     }
 

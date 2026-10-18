@@ -56,66 +56,84 @@ struct SettingsView: View {
                 Spacer()
             }
 
-            GroupBox {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(L.t("语言", "Language")).font(.caption).foregroundStyle(.secondary)
-                    Picker("", selection: $lang) {
-                        Text("中文").tag("zh")
-                        Text("English").tag("en")
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
+            ScrollView {
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(L.t("语言", "Language")).font(.caption).foregroundStyle(.secondary)
+                        Picker("", selection: $lang) {
+                            Text("中文").tag("zh")
+                            Text("English").tag("en")
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
 
-                    Divider()
+                        Divider()
 
-                    Text(L.t("外观", "Appearance")).font(.caption).foregroundStyle(.secondary)
-                    Picker("", selection: $appearance) {
-                        Text(L.t("跟随系统", "System")).tag("system")
-                        Text(L.t("浅色", "Light")).tag("light")
-                        Text(L.t("深色", "Dark")).tag("dark")
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
+                        Text(L.t("外观", "Appearance")).font(.caption).foregroundStyle(.secondary)
+                        Picker("", selection: $appearance) {
+                            Text(L.t("跟随系统", "System")).tag("system")
+                            Text(L.t("浅色", "Light")).tag("light")
+                            Text(L.t("深色", "Dark")).tag("dark")
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
 
-                    Divider()
+                        Divider()
 
-                    Text(L.t("强调色", "Accent color")).font(.caption).foregroundStyle(.secondary)
-                    HStack(spacing: 10) {
-                        ForEach(AppTheme.accents, id: \.id) { a in
-                            Circle()
-                                .fill(AppTheme.color(a.id))
-                                .frame(width: 26, height: 26)
-                                .overlay(
-                                    Circle().stroke(Color.primary.opacity(accent == a.id ? 0.9 : 0),
-                                                    lineWidth: 2)
-                                )
-                                .onTapGesture { accent = a.id }
-                                .help(lang == "en" ? a.en : a.zh)
+                        Text(L.t("强调色", "Accent color")).font(.caption).foregroundStyle(.secondary)
+                        HStack(spacing: 10) {
+                            ForEach(AppTheme.accents, id: \.id) { a in
+                                Circle()
+                                    .fill(AppTheme.color(a.id))
+                                    .frame(width: 26, height: 26)
+                                    .overlay(
+                                        Circle().stroke(Color.primary.opacity(accent == a.id ? 0.9 : 0),
+                                                        lineWidth: 2)
+                                    )
+                                    .onTapGesture { accent = a.id }
+                                    .help(lang == "en" ? a.en : a.zh)
+                            }
+                        }
+
+                        Divider()
+
+                        Toggle(L.t("显示日志面板", "Show log panel"), isOn: $showLog)
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+
+                        Divider()
+
+                        Text(L.t("系统权限", "Permissions")).font(.caption).foregroundStyle(.secondary)
+                        permRow(L.t("辅助功能（调窗口大小/平铺/聚焦）", "Accessibility (resize / tile / focus)"),
+                                granted: store.axOK,
+                                grant: { Perm.requestAccessibility(); Perm.openAccessibility() },
+                                open: { Perm.openAccessibility() })
+                        permRow(L.t("屏幕录制（窗口预览）", "Screen Recording (previews)"),
+                                granted: store.screenOK,
+                                grant: { Perm.requestScreenRecording(); Perm.openScreenRecording() },
+                                open: { Perm.openScreenRecording() })
+                        permRow(L.t("自动化（System Events / Finder）", "Automation (System Events / Finder)"),
+                                granted: store.automationOK,
+                                grant: { store.requestAutomation() },
+                                open: { Perm.openAutomation() })
+                            .disabled(store.requestingAutomation)
+                        Divider()
+                        Text(L.t("新手引导", "Onboarding")).font(.caption).foregroundStyle(.secondary)
+                        HStack(spacing: 8) {
+                            Button(L.t("重新播放教程", "Replay tutorial")) { store.startTour(); dismiss() }
+                                .controlSize(.small)
+                            Button(L.t("重新打开权限引导", "Permission setup")) {
+                                store.reopenOnboarding()
+                                dismiss()
+                            }
+                            .controlSize(.small)
+                            Spacer()
                         }
                     }
-
-                    Divider()
-
-                    Toggle(L.t("显示日志面板", "Show log panel"), isOn: $showLog)
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-
-                    Divider()
-
-                    Text(L.t("系统权限", "Permissions")).font(.caption).foregroundStyle(.secondary)
-                    permRow(L.t("辅助功能（调窗口大小/平铺/聚焦）", "Accessibility (resize / tile / focus)"),
-                            granted: store.axOK,
-                            grant: { Perm.requestAccessibility(); Perm.openAccessibility() },
-                            open: { Perm.openAccessibility() })
-                    permRow(L.t("屏幕录制（窗口预览）", "Screen Recording (previews)"),
-                            granted: store.screenOK,
-                            grant: { Perm.requestScreenRecording(); Perm.openScreenRecording() },
-                            open: { Perm.openScreenRecording() })
+                    .padding(8)
                 }
-                .padding(8)
-            }
 
-            Spacer()
+            }
             HStack {
                 Spacer()
                 Button(L.t("完成", "Done")) { dismiss() }
@@ -123,6 +141,7 @@ struct SettingsView: View {
             }
         }
         .padding(20)
-        .frame(width: 420, height: 420)
+        .frame(width: 480, height: 590)
+        .onDisappear { PermissionCoach.shared.hide() }
     }
 }

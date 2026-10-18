@@ -35,11 +35,14 @@ Roost —— 本地 Roblox 多开器
 
 使用
 ----
-1. 点右上角 + ，在弹出的窗口里正常登录 Roblox（支持两步验证）
-2. 登录完会自动添加账号
-3. 需要多开时，设置好 placeId / 窗口大小 / fps，点「启动」
-4. 想看每个窗口的画面，点「预览」（首次会要求「屏幕录制」权限）
-5. 窗口大小/自动排列需要「辅助功能」权限（系统设置 → 隐私与安全性）
+1. 首次打开按权限清单设置辅助功能、屏幕录制和自动化，也可选择稍后设置
+2. 点「去授权」后，系统设置下方会浮出授权助手，可将 Roost 图标拖入支持的权限列表
+3. 完成设置后播放烟花并进入六步教程；可跳过，在「设置 → 新手引导」重新播放
+4. 点「添加账号」，在 Roblox 官方页面登录（支持两步验证），账号会自动加入
+5. 设置 placeId / 窗口大小 / fps，点「启动」；工具栏「预览」查看运行中的窗口
+
+升级后如权限开关已开启但 Roost 仍提示未授权，请在系统设置中移除旧 Roost 条目，
+重新添加 /Applications/Roost.app 并授权。系统提示重新打开时，请按提示操作。
 
 要求
 ----
@@ -74,12 +77,14 @@ choose one:
 
 Usage
 -----
-1. Click + in the toolbar, then sign in to Roblox in the window (2FA supported)
-2. The account is added automatically once you are signed in
-3. Set placeId / window size / fps, then click Launch
-4. Click Preview to see live thumbnails of every running instance
-   (requires Screen Recording permission the first time)
-5. Window size and auto-arrange need Accessibility permission
+1. First launch shows Accessibility, Screen Recording and Automation setup; you can also set up later
+2. Grant access opens System Settings with a floating helper; drag Roost into supported permission lists
+3. Finishing setup plays a celebration and a six-step tour. Skip it or replay from Settings > Onboarding
+4. Click Add account and sign in on Roblox's official page (2FA supported); the account is added automatically
+5. Set placeId / window size / fps, then Launch. Preview shows running game windows
+
+If an update leaves a permission enabled in macOS but unrecognized in Roost, remove the old Roost entry,
+add /Applications/Roost.app again and grant access. Reopen the app when macOS asks.
 
 Requirements
 ------------

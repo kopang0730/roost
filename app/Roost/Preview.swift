@@ -36,10 +36,8 @@ final class PreviewModel: ObservableObject {
     }
 
     func requestPermission() {
-        _ = CGRequestScreenCaptureAccess()
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
-            NSWorkspace.shared.open(url)
-        }
+        Perm.requestScreenRecording()
+        Perm.openScreenRecording()
     }
 
     private func tick() async {

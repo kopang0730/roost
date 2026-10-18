@@ -89,7 +89,7 @@ struct PresetSection: View {
                         .hoverHint(L.t("把下面所有预设项恢复成默认（不影响手写的 Flag）", "Reset every preset below to default (raw flags are kept)"), store)
                         .disabled(store.busy != nil)
                         .help(L.t("清掉下面所有预设管理的 Flag", "Clear all preset-managed flags"))
-                }
+                }.tourAnchor("presets")
 
                 if store.presetGroups.isEmpty {
                     Text(L.t("预设加载中…", "Loading presets…")).font(.caption).foregroundStyle(.secondary)

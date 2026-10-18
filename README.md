@@ -46,6 +46,8 @@ Runs entirely on your Mac: no account system, no servers, no licensing checks.
 
 ## Getting started
 
+The first launch opens a setup checklist for Accessibility, Screen Recording, and Automation (System Events / Finder). Open each permission page and enable Roost. A floating assistant appears below System Settings with a draggable app icon for supported permission lists. You can also set up later. Finishing setup plays a short celebration, followed by a six-step spotlight tour. Skip the tour any time, or replay it from Settings → Onboarding.
+
 ```
 1. Click + in the toolbar → sign in to Roblox in the window
 2. Once signed in, the account is added automatically and the window closes

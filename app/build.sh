@@ -15,6 +15,10 @@ BUNDLE="$BUILD/$APP_NAME.app"
 echo "▸ 清理"
 rm -rf "$BUILD"
 mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
+# Freeze Swift inputs outside File Provider so materialization cannot change them mid-build.
+SWIFT_SOURCES="$BUILD/SwiftSources"
+mkdir -p "$SWIFT_SOURCES"
+cp "$HERE/Roost/"*.swift "$SWIFT_SOURCES/"
 
 echo "▸ 生成图标"
 swift "$HERE/make_icon.swift" "$BUILD/icon-1024.png" >/dev/null
@@ -31,18 +35,20 @@ swiftc -O -swift-version 5 \
   -target arm64-apple-macos13.0 \
   -framework SwiftUI -framework AppKit -framework WebKit -framework ScreenCaptureKit \
   -o "$BUNDLE/Contents/MacOS/$APP_NAME" \
-  "$HERE/Roost/RoostApp.swift" \
-  "$HERE/Roost/L10n.swift" \
-  "$HERE/Roost/Settings.swift" \
-  "$HERE/Roost/HoverHint.swift" \
-  "$HERE/Roost/LoginWeb.swift" \
-  "$HERE/Roost/Permissions.swift" \
-  "$HERE/Roost/Preview.swift" \
-  "$HERE/Roost/Py.swift" \
-  "$HERE/Roost/Avatar.swift" \
-  "$HERE/Roost/Store.swift" \
-  "$HERE/Roost/Presets.swift" \
-  "$HERE/Roost/Views.swift"
+  "$SWIFT_SOURCES/RoostApp.swift" \
+  "$SWIFT_SOURCES/L10n.swift" \
+  "$SWIFT_SOURCES/Settings.swift" \
+  "$SWIFT_SOURCES/HoverHint.swift" \
+  "$SWIFT_SOURCES/LoginWeb.swift" \
+  "$SWIFT_SOURCES/Onboarding.swift" \
+  "$SWIFT_SOURCES/Permissions.swift" \
+  "$SWIFT_SOURCES/PermissionCoach.swift" \
+  "$SWIFT_SOURCES/Preview.swift" \
+  "$SWIFT_SOURCES/Py.swift" \
+  "$SWIFT_SOURCES/Avatar.swift" \
+  "$SWIFT_SOURCES/Store.swift" \
+  "$SWIFT_SOURCES/Presets.swift" \
+  "$SWIFT_SOURCES/Views.swift"
 
 echo "▸ 打包"
 cat > "$BUNDLE/Contents/Info.plist" <<PLIST
@@ -58,6 +64,7 @@ cat > "$BUNDLE/Contents/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>CFBundleVersion</key><string>${BUILD_NUMBER}</string>
   <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>NSAppleEventsUsageDescription</key><string>Roost uses System Events and Finder to resize, arrange and focus your Roblox windows.</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSQuitAlwaysKeepsWindows</key><false/>
   <key>NSWindowRestoresWorkspaceAtLaunch</key><false/>

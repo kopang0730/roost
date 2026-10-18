@@ -20,13 +20,73 @@ final class Store: ObservableObject {
     @Published var appUpdate: UpdateInfo? = nil
     @Published var axOK = Perm.accessibility
     @Published var screenOK = Perm.screenRecording
+    @Published var automationOK = Perm.automation
+    @Published var requestingAutomation = false
     @Published var dismissedPerm: String? = UserDefaults.standard.string(forKey: "dismissedPerm") {
         didSet { UserDefaults.standard.set(dismissedPerm, forKey: "dismissedPerm") }
     }
 
+    // 首次启动向导 + 教程
+    @Published var showOnboarding = !UserDefaults.standard.bool(forKey: "onboarded")
+    @Published var tourActive = false
+    @Published var tourStep = 0
+    @Published var tourUsesExample = false
+
+    func finishOnboarding(startTour: Bool = true) {
+        PermissionCoach.shared.hide()
+        UserDefaults.standard.set(true, forKey: "onboarded")
+        showOnboarding = false
+        if startTour {
+            self.startTour()
+        }
+    }
+
+    func startTour() {
+        PermissionCoach.shared.hide()
+        NSApp?.keyWindow?.makeFirstResponder(nil)
+        showOnboarding = false
+        tourUsesExample = current == nil
+        tourStep = 0
+        tourActive = true
+    }
+
+    func advanceTour() {
+        if tourStep + 1 >= TourScript.steps.count {
+            endTour()
+        } else {
+            tourStep += 1
+        }
+    }
+
+    func endTour() {
+        UserDefaults.standard.set(true, forKey: "tourDone")
+        tourActive = false
+        tourUsesExample = false
+    }
+
+    func reopenOnboarding() {
+        endTour()
+        UserDefaults.standard.set(false, forKey: "onboarded")
+        showOnboarding = true
+    }
+
+    func requestAutomation() {
+        guard !requestingAutomation else { return }
+        requestingAutomation = true
+        Perm.openAutomation()
+        Perm.requestAutomation { [weak self] in
+            self?.requestingAutomation = false
+            self?.refreshPermissions()
+        }
+    }
+
     func refreshPermissions() {
-        axOK = Perm.accessibility
-        screenOK = Perm.screenRecording
+        let accessibility = Perm.accessibility
+        let screen = Perm.screenRecording
+        let automation = Perm.automation
+        if axOK != accessibility { axOK = accessibility }
+        if screenOK != screen { screenOK = screen }
+        if automationOK != automation { automationOK = automation }
     }
     @Published var presetGroups: [PresetGroup] = []
     @Published var managedKeys: [String] = []
@@ -35,10 +95,13 @@ final class Store: ObservableObject {
 
     private var pollTimer: Timer?
 
-    init() {
-        refresh()
-        loadPresets()
-        startPolling()
+    init(startServices: Bool = true) {
+        if startServices {
+            Perm.prepareAutomationChecks { [weak self] in self?.refreshPermissions() }
+            refresh()
+            loadPresets()
+            startPolling()
+        }
     }
 
     func startPolling() {

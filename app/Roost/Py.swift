@@ -85,6 +85,7 @@ enum Py {
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = shellPath()
         env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONDONTWRITEBYTECODE"] = "1" // Keep the signed app bundle immutable.
         env["ROOST_LANG"] = L.lang
         proc.environment = env
 
