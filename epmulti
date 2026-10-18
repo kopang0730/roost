@@ -1,0 +1,1669 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+"""
+epmulti — 本地 Roblox 多开器（免登录 / 免授权校验 / 带 GUI）
+
+零登录   直接复用本机 Roblox 客户端已有的 .ROBLOSECURITY；加号时粘贴一次会话串即可。
+零授权   不联系 exopanda.com，不读 keystate.json，不改原 app。
+零依赖   只用 macOS 自带 python3 + clang + security + codesign + PlistBuddy。
+
+多开原理
+  Roblox.app 的 LSMultipleInstancesProhibited = true，同 bundle id 只能跑一个。
+  每个账号一份 APFS clonefile 副本：改 bundle id、解除单实例、写入 FFlags、ad-hoc 重签，
+  再用账号会话换 rbx-authentication-ticket，最后把 roblox-player: 深链交给该副本。
+
+用法
+  epmulti doctor
+  epmulti accounts add --name main --from-local
+  epmulti accounts add --name alt  --cookie-stdin
+  epmulti accounts add --name alt  --from-clipboard   # 先把会话串复制到剪贴板
+  epmulti accounts list | rm NAME
+  epmulti check NAME
+  epmulti flags NAME                       # 看该账号的 FFlags
+  epmulti flags NAME --set DFIntX=1 --unset FFlagY --clear
+  epmulti launch NAME [--place ID] [--fps 60] [--size 1020x640] [--dry-run]
+  epmulti launch --all --place ID
+  epmulti gui                              # 本地 GUI（127.0.0.1，token 保护）
+  epmulti clean [--keep-copies]
+"""
+
+import base64
+import hashlib
+import json
+import math
+import os
+import plistlib
+import random
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import webbrowser
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+ROBLOX_APP = "/Applications/Roblox.app"
+BASE = os.path.expanduser("~/Library/Application Support/epmulti")
+INSTANCES = os.path.join(BASE, "instances")
+BIN = os.path.join(BASE, "bin")
+STATE = os.path.join(BASE, "state.json")
+JAR_SRC = os.path.join(BIN, "CookieJar.m")
+KEYCHAIN_SERVICE = "epmulti"
+
+UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+TICKET_URL = "https://auth.roblox.com/v1/authentication-ticket/"
+WHOAMI_URL = "https://users.roblox.com/v1/users/authenticated"
+
+C_DIM, C_RED, C_GRN, C_YEL, C_OFF = "\033[2m", "\033[31m", "\033[32m", "\033[33m", "\033[0m"
+MENUBAR_H = 28
+LANG = (os.environ.get("EPMULTI_LANG") or "zh").strip().lower()
+EN = LANG.startswith("en")
+
+
+def T(zh, en):
+    """给 app / 报错用的双语；CLI 默认中文。"""
+    return en if EN else zh
+
+JAR_SOURCE = r'''
+#import <Foundation/Foundation.h>
+int main(int argc, const char *argv[]) {
+    @autoreleasepool {
+        NSHTTPCookieStorage *store = [NSHTTPCookieStorage sharedHTTPCookieStorage];
+        if (argc >= 2 && strcmp(argv[1], "--read") == 0) {
+            for (NSHTTPCookie *c in [store cookies])
+                printf("%s\t%s\t%s\t%lu\n", c.domain.UTF8String, c.name.UTF8String,
+                       c.path.UTF8String, (unsigned long)c.value.length);
+            return 0;
+        }
+        if (argc < 2) { fprintf(stderr, "usage: CookieJar <value|--read> [domain]\n"); return 2; }
+        NSString *value  = [NSString stringWithUTF8String:argv[1]];
+        NSString *domain = argc > 2 ? [NSString stringWithUTF8String:argv[2]] : @".roblox.com";
+        NSDictionary *props = @{
+            NSHTTPCookieName:    @".ROBLOSECURITY",
+            NSHTTPCookieValue:   value,
+            NSHTTPCookieDomain:  domain,
+            NSHTTPCookiePath:    @"/",
+            NSHTTPCookieSecure:  @"TRUE",
+            NSHTTPCookieExpires: [NSDate dateWithTimeIntervalSinceNow: 400.0 * 24 * 3600],
+        };
+        NSHTTPCookie *cookie = [NSHTTPCookie cookieWithProperties:props];
+        if (!cookie) { fprintf(stderr, "cookieWithProperties failed\n"); return 1; }
+        [store setCookie:cookie];
+        fprintf(stdout, "ok\n");
+    }
+    return 0;
+}
+'''
+
+
+# ------------------------------------------------------------------ 基础
+
+API_MODE = False
+LOG_STREAM = sys.stdout
+
+
+def say(msg, color=""):
+    if API_MODE:
+        LOG_STREAM.write((color + msg + C_OFF if color else msg) + "\n")
+        LOG_STREAM.flush()
+        return
+    print((color + msg + C_OFF) if color else msg)
+
+
+def emit(obj):
+    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+class ApiError(Exception):
+    """API 模式下代替 sys.exit，保证 stdout 只有一行 JSON。"""
+
+
+def die(msg, code=1):
+    say(T("error: ", "error: ") + msg, C_RED)
+    if API_MODE:
+        raise ApiError(msg)
+    sys.exit(code)
+
+
+def run(cmd, **kw):
+    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+
+
+def mask(secret, head=8):
+    return (secret[:head] + "…(" + str(len(secret)) + " chars)") if secret else "-"
+
+
+def slug(name):
+    return hashlib.sha1(name.encode()).hexdigest()[:8]
+
+
+def bundle_id_for(name):
+    return "com.roblox.RobloxPlayer.ep" + slug(name)
+
+
+def load_state():
+    if not os.path.exists(STATE):
+        return {"accounts": {}}
+    with open(STATE) as f:
+        st = json.load(f)
+    st.setdefault("accounts", {})
+    return st
+
+
+def save_state(st):
+    os.makedirs(BASE, exist_ok=True)
+    tmp = STATE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(st, f, indent=2, sort_keys=True)
+    os.replace(tmp, STATE)
+
+
+# ------------------------------------------------------------------ Keychain
+
+def kc_set(name, secret):
+    run(["security", "delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", name])
+    r = run(["security", "add-generic-password", "-s", KEYCHAIN_SERVICE, "-a", name,
+             "-w", secret, "-U"])
+    if r.returncode != 0:
+        die(T("写入 Keychain 失败: ", "Keychain write failed: ") + (r.stderr or "").strip())
+
+
+def kc_get(name):
+    r = run(["security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", name, "-w"])
+    return r.stdout.strip() if r.returncode == 0 else None
+
+
+def kc_del(name):
+    run(["security", "delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", name])
+
+
+# ------------------------------------------------------------------ 会话来源
+
+def local_roblox_cookie():
+    """从本机 Roblox 的 CFNetwork cookie 库读 .ROBLOSECURITY。
+
+    binarycookies 的页结构很碎，这里只做“可靠定位”：字符串区按
+    domain \\0 name \\0 path \\0 value \\0 排列，找到名字后跳一个路径串，
+    再用 Roblox 会话串的固定前缀校验。
+    """
+    path = os.path.expanduser("~/Library/HTTPStorages/com.roblox.RobloxPlayer.binarycookies")
+    if not os.path.exists(path):
+        return None
+    data = open(path, "rb").read()
+    i = data.find(b".ROBLOSECURITY\x00")
+    if i < 0:
+        return None
+    tail = data[i + len(b".ROBLOSECURITY\x00"):]
+    for part in tail.split(b"\x00")[:4]:
+        if not part:
+            continue
+        s = part.decode("utf-8", "replace")
+        if s.startswith("_|WARNING:-DO-NOT-SHARE-THIS."):
+            return s
+    return None
+
+
+def normalize_cookie(raw):
+    raw = (raw or "").strip().strip('"')
+    if raw.lower().startswith(".robloxsecurity="):
+        raw = raw.split("=", 1)[1]
+    return raw
+
+
+def valid_cookie(c):
+    return bool(c) and c.startswith("_|WARNING:-DO-NOT-SHARE-THIS.") and len(c) > 100
+
+
+def read_clipboard():
+    r = run(["pbpaste"])
+    return r.stdout if r.returncode == 0 else ""
+
+
+COOKIE_HINT = """怎么拿到会话串：
+  1) 浏览器登录 www.roblox.com（就是你要加的那个账号）
+  2) Chrome：DevTools(F12) → Application → Storage → Cookies → https://www.roblox.com
+     Safari：设置里先勾“显示网页开发者功能”，再 开发 → 显示 Web 检查器 → 存储 → Cookie
+  3) 找到 .ROBLOSECURITY，整串复制（它必须以 _|WARNING:-DO-NOT-SHARE-THIS. 开头）
+  注意：这串等同账号密码，别发给任何人、别贴到聊天窗口。"""
+
+
+# ------------------------------------------------------------------ CFNetwork cookie 写入器
+
+def ensure_helper():
+    """构建一个极小的 CookieJar.app —— 靠 CFNetwork 自己把 cookie 写进目标库。
+
+    比起手写 binarycookies 的二进制格式，这条路零格式风险：写出来的文件
+    就是 CFNetwork 自己的东西。bundle id 在注入时改成目标副本的 id，
+    这样它写的就是 ~/Library/HTTPStorages/<bid>.binarycookies。
+    """
+    app = os.path.join(BIN, "CookieJar.app")
+    binary = os.path.join(app, "Contents", "MacOS", "CookieJar")
+    if os.path.exists(binary):
+        return app
+    # app 里带了预编译好的 helper（朋友机器没装 clang 也能用）
+    here = os.path.dirname(os.path.abspath(__file__))
+    bundled = os.path.join(here, "helper", "CookieJar.app")
+    if os.path.isdir(bundled):
+        os.makedirs(BIN, exist_ok=True)
+        shutil.copytree(bundled, app)
+        run(["xattr", "-cr", app])
+        return app
+    os.makedirs(os.path.join(app, "Contents", "MacOS"), exist_ok=True)
+    open(JAR_SRC, "w").write(JAR_SOURCE)
+    info = {
+        "CFBundleIdentifier": "com.epmulti.cookiejar",
+        "CFBundleName": "CookieJar",
+        "CFBundleExecutable": "CookieJar",
+        "CFBundlePackageType": "APPL",
+        "CFBundleVersion": "1",
+        "CFBundleShortVersionString": "1.0",
+    }
+    with open(os.path.join(app, "Contents", "Info.plist"), "wb") as f:
+        plistlib.dump(info, f)
+    r = run(["clang", "-fobjc-arc", "-framework", "Foundation", "-o", binary, JAR_SRC])
+    if r.returncode != 0:
+        raise RuntimeError(T("clang 编译失败: ", "clang build failed: ") + (r.stderr or "").strip()[:200])
+    run(["codesign", "--force", "-s", "-", app])
+    return app
+
+
+def inject_cookie(name, cookie):
+    """把会话写进该账号副本专属的 cookie 库（bundle id = 副本 id）。"""
+    try:
+        src = ensure_helper()
+    except Exception as e:
+        return False, str(e)
+    bid = bundle_id_for(name)
+    work = os.path.join(BIN, "jar-" + slug(name) + ".app")
+    if os.path.exists(work):
+        shutil.rmtree(work)
+    shutil.copytree(src, work)
+    plist = os.path.join(work, "Contents", "Info.plist")
+    info = plistlib.load(open(plist, "rb"))
+    info["CFBundleIdentifier"] = bid
+    with open(plist, "wb") as f:
+        plistlib.dump(info, f)
+    run(["xattr", "-cr", work])
+    r = run(["codesign", "--force", "-s", "-", work])
+    if r.returncode != 0:
+        return False, T("helper 重签失败: ", "helper re-sign failed: ") + (r.stderr or "").strip()[:160]
+    r = run([os.path.join(work, "Contents", "MacOS", "CookieJar"), cookie])
+    if r.returncode != 0:
+        return False, (r.stderr or r.stdout or "helper 运行失败").strip()[:160]
+    dst = os.path.expanduser("~/Library/HTTPStorages/" + bid + ".binarycookies")
+    if not os.path.exists(dst):
+        return False, T("CFNetwork 未落盘: ", "CFNetwork did not write: ") + dst
+    os.chmod(dst, 0o600)
+    return True, dst
+
+
+def read_back_cookie(name):
+    """用同一个 helper 读回，确认注入的会话确实在库里（返回 value 长度）。"""
+    work = os.path.join(BIN, "jar-" + slug(name) + ".app")
+    exe = os.path.join(work, "Contents", "MacOS", "CookieJar")
+    if not os.path.exists(exe):
+        return None
+    r = run([exe, "--read"])
+    for line in (r.stdout or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) == 4 and parts[1] == ".ROBLOSECURITY" and parts[0] == ".roblox.com":
+            return int(parts[3])
+    return None
+
+
+# ------------------------------------------------------------------ HTTP
+
+def _req(url, cookie, method="GET", data=None, extra=None):
+    headers = {
+        "Cookie": ".ROBLOSECURITY=" + cookie,
+        "User-Agent": UA,
+        "Referer": "https://www.roblox.com/",
+        "Origin": "https://www.roblox.com",
+        "Accept": "application/json",
+    }
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    if extra:
+        headers.update(extra)
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.status, dict(r.headers), r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, dict(e.headers), e.read()
+
+
+def whoami(cookie):
+    st, _, body = _req(WHOAMI_URL, cookie)
+    if st != 200:
+        return None, "HTTP %d" % st
+    try:
+        j = json.loads(body)
+    except Exception:
+        return None, T("响应不是 JSON", "response is not JSON")
+    return {"user_id": j.get("id"), "username": j.get("name"),
+            "display_name": j.get("displayName")}, None
+
+
+def mint_ticket(cookie):
+    st, hdr, _ = _req(TICKET_URL, cookie, method="POST", data=b"{}")
+    if st == 403:
+        csrf = hdr.get("x-csrf-token") or hdr.get("X-CSRF-Token")
+        if not csrf:
+            return None, T("403 且没有 x-csrf-token", "403 without x-csrf-token")
+        st, hdr, _ = _req(TICKET_URL, cookie, method="POST", data=b"{}",
+                          extra={"X-CSRF-TOKEN": csrf})
+    if st != 200:
+        return None, "HTTP %d" % st
+    ticket = hdr.get("rbx-authentication-ticket") or hdr.get("Rbx-Authentication-Ticket")
+    return (ticket, None) if ticket else (None, T("200 但没有 rbx-authentication-ticket", "200 without rbx-authentication-ticket"))
+
+
+# ------------------------------------------------------------------ 副本
+
+def src_version():
+    r = run(["/usr/libexec/PlistBuddy", "-c", "Print :CFBundleVersion",
+             os.path.join(ROBLOX_APP, "Contents", "Info.plist")])
+    return r.stdout.strip() if r.returncode == 0 else "?"
+
+
+def instance_dir(name):
+    return os.path.join(INSTANCES, slug(name))
+
+
+def instance_app(name):
+    return os.path.join(instance_dir(name), "Roblox.app")
+
+
+def instance_ready(name):
+    marker = os.path.join(instance_dir(name), ".epmulti-ready")
+    if not (os.path.isdir(instance_app(name)) and os.path.exists(marker)):
+        return False
+    try:
+        return json.load(open(marker)).get("src_version") == src_version()
+    except Exception:
+        return False
+
+
+def write_flags(app, flags, fps=None):
+    """把 FFlags 写进副本的 Contents/Resources/ClientSettings/ClientAppSettings.json。"""
+    data = dict(flags or {})
+    if fps:
+        data["DFIntTaskSchedulerTargetFps"] = str(int(fps))
+    if not data:
+        return None
+    d = os.path.join(app, "Contents", "Resources", "ClientSettings")
+    os.makedirs(d, exist_ok=True)
+    p = os.path.join(d, "ClientAppSettings.json")
+    with open(p, "w") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+    return p
+
+
+def ensure_instance(name, flags=None, fps=None, quiet=False):
+    """准备独立副本：clonefile → 改 bundle id → 解除单实例 → 写 FFlags → ad-hoc 重签。"""
+    if instance_ready(name):
+        app = instance_app(name)
+        if write_flags(app, flags, fps):
+            run(["codesign", "--force", "--deep", "-s", "-", app])
+        return app
+    if not os.path.isdir(ROBLOX_APP):
+        die(T("找不到 ", "Cannot find ") + ROBLOX_APP)
+    d, app = instance_dir(name), instance_app(name)
+    if os.path.exists(d):
+        shutil.rmtree(d)
+    os.makedirs(d, exist_ok=True)
+    if not quiet:
+        say("  复制 Roblox.app（APFS clonefile）", C_DIM)
+    r = run(["cp", "-cR", ROBLOX_APP, app])
+    if r.returncode != 0:
+        if not quiet:
+            say("  clonefile 不可用，退回 ditto（286 MB）", C_YEL)
+        r = run(["ditto", ROBLOX_APP, app])
+        if r.returncode != 0:
+            die(T("复制失败: ", "copy failed: ") + r.stderr.strip())
+
+    plist = os.path.join(app, "Contents", "Info.plist")
+    for k, v in ((":CFBundleIdentifier", bundle_id_for(name)),
+                 (":LSMultipleInstancesProhibited", "false"),
+                 (":CFBundleName", "Roblox (" + name + ")")):
+        run(["/usr/libexec/PlistBuddy", "-c", "Set %s %s" % (k, v), plist])
+    write_flags(app, flags, fps)
+    run(["xattr", "-cr", app])
+    if not quiet:
+        say("  重签（ad-hoc）", C_DIM)
+    r = run(["codesign", "--force", "--deep", "-s", "-", app])
+    if r.returncode != 0:
+        die(T("重签失败: ", "re-sign failed: ") + (r.stderr or "").strip())
+    json.dump({"bundle_id": bundle_id_for(name), "src_version": src_version(),
+               "created": int(time.time())},
+              open(os.path.join(d, ".epmulti-ready"), "w"))
+    return app
+
+
+# ------------------------------------------------------------------ 启动
+
+def build_url(ticket, place_id=None):
+    bt = random.randint(10 ** 14, 10 ** 15 - 1)
+    lt = int(time.time() * 1000)
+    if place_id:
+        plc = ("https://assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestGame"
+               "&browserTrackerId=%d&placeId=%s&isPlayTogetherGame=false" % (bt, place_id))
+        return ("roblox-player:1+launchmode:play+gameinfo:%s+launchtime:%d"
+                "+placelauncherurl:%s+browsertrackerid:%d"
+                "+robloxLocale:en_us+gameLocale:en_us" % (ticket, lt,
+                                                          urllib.parse.quote(plc, safe=""), bt))
+    return ("roblox-player:1+launchmode:app+gameinfo:%s+launchtime:%d"
+            "+browsertrackerid:%d+robloxLocale:en_us+gameLocale:en_us" % (ticket, lt, bt))
+
+
+def clone_pid(app, timeout=15.0):
+    pat = re.escape(os.path.join(app, "Contents", "MacOS", "RobloxPlayer"))
+    end = time.time() + timeout
+    while time.time() < end:
+        r = run(["pgrep", "-f", pat])
+        if r.returncode == 0 and r.stdout.strip():
+            return int(r.stdout.split()[0])
+        time.sleep(0.4)
+    return None
+
+
+def screen_frame():
+    """逻辑屏幕边界 (x0, y0, x1, y1)。走 Finder，不需要辅助功能权限。"""
+    r = run(["osascript", "-e", 'tell application "Finder" to get bounds of window of desktop'])
+    if r.returncode != 0:
+        return None
+    try:
+        parts = [int(p.strip()) for p in r.stdout.strip().split(",")]
+        if len(parts) == 4 and parts[2] > parts[0] and parts[3] > parts[1]:
+            return tuple(parts)
+    except Exception:
+        pass
+    return None
+
+
+def grid_position(slot, total, w, h):
+    """把第 slot 个（共 total 个）窗口摆成网格，尽量居中不重叠。"""
+    f = screen_frame()
+    if not f:
+        return None
+    x0, y0, x1, y1 = f
+    sw, sh = x1 - x0, y1 - y0
+    total = max(1, int(total))
+    slot = max(0, min(int(slot), total - 1))
+    max_cols = max(1, sw // max(1, w))
+    want_cols = 1 if total == 1 else int(math.ceil(math.sqrt(total)))
+    cols = max(1, min(want_cols, max_cols))
+    rows = int(math.ceil(total / float(cols)))
+    cw, ch = max(1, sw // cols), max(1, sh // rows)
+    if cw < w or ch < h:
+        # 屏幕塞不下网格：级联，避免窗口完全叠在一起
+        step = 34
+        x = x0 + 24 + (slot % 9) * step
+        y = y0 + MENUBAR_H + 16 + (slot % 9) * step
+    else:
+        col, row = slot % cols, slot // cols
+        x = x0 + col * cw + max(0, (cw - w) // 2)
+        y = y0 + row * ch + max(0, (ch - h) // 2) + MENUBAR_H
+    x = min(max(x, x0), max(x0, x1 - w))
+    y = min(max(y, y0 + MENUBAR_H), max(y0 + MENUBAR_H, y1 - h))
+    return (x, y)
+
+
+def resize_window(pid, size, pos=None):
+    """设置窗口尺寸（和位置）。需要给控制方授予“辅助功能”权限。"""
+    if not pid or not size:
+        return False, "no pid"
+    w, h = size
+    lines = []
+    if pos:
+        lines.append("set position of window 1 to {%d, %d}" % (int(pos[0]), int(pos[1])))
+    lines.append("set size of window 1 to {%d, %d}" % (int(w), int(h)))
+    script = ('tell application "System Events" to tell (first process whose unix id is %d)\n' % int(pid)
+              + "\n".join(lines) + "\nend tell")
+    r = run(["osascript", "-e", script])
+    if r.returncode == 0:
+        return True, "ok"
+    err = (r.stderr or "").strip().splitlines()
+    return False, (err[0] if err else "osascript failed")
+
+
+def do_launch(name, st, place=None, dry=False, fps=None, size=None, extra_flags=None,
+              slot=0, total=1, snap=True):
+    acct = st["accounts"].get(name)
+    if not acct:
+        return {"ok": False, "error": T("没有账号 ", "no account: ") + name}
+    cookie = kc_get(name)
+    if not cookie:
+        return {"ok": False, "error": T("账号 %s 没有会话", "account %s has no session") % name}
+
+    flags = dict(acct.get("flags") or {})
+    if extra_flags:
+        flags.update(extra_flags)
+
+    if dry:
+        pos = grid_position(slot, total, size[0], size[1]) if (size and snap) else None
+        return {"ok": True, "dry": True, "account": name,
+                "bundle_id": bundle_id_for(name),
+                "url": build_url("<TICKET>", place),
+                "flags": flags, "fps": fps, "size": size, "pos": pos,
+                "instance_ready": instance_ready(name)}
+
+    app = ensure_instance(name, flags, fps, quiet=API_MODE)
+    injected, inj_msg = inject_cookie(name, cookie)
+    ticket, err = mint_ticket(cookie)
+    if not ticket:
+        return {"ok": False, "error": T("取票失败: %s", "ticket failed: %s") % err}
+    url = build_url(ticket, place)
+    r = run(["open", "-n", "-a", app, url])
+    if r.returncode != 0:
+        subprocess.Popen([os.path.join(app, "Contents", "MacOS", "RobloxPlayer"), url],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    pid = clone_pid(app)
+    try:
+        st.setdefault("accounts", {}).get(name, {})["last_launch"] = {
+            "place": place, "at": int(time.time() * 1000), "pid": pid}
+        save_state(st)
+    except Exception:
+        pass
+    resized = None
+    if size and pid:
+        pos = grid_position(slot, total, size[0], size[1]) if snap else None
+        ok, msg = resize_window(pid, size, pos)
+        resized = {"ok": ok, "detail": msg, "pos": pos}
+    return {"ok": True, "account": name, "user_id": acct.get("user_id"),
+            "place": place, "pid": pid, "injected": injected, "inject_detail": inj_msg,
+            "resized": resized, "url": url}
+
+
+# ------------------------------------------------------------------ 命令
+
+def cmd_doctor(argv):
+    print("python        : %s" % sys.version.split()[0])
+    print("Roblox        : %s (version %s)" % (ROBLOX_APP, src_version()))
+    c = local_roblox_cookie()
+    print("本机会话      : " + (C_GRN + mask(c, 6) + C_OFF if c else C_RED + "未找到" + C_OFF))
+    print("clang         : " + ("OK" if run(["clang", "--version"]).returncode == 0 else "缺失"))
+    try:
+        ensure_helper()
+        print("cookie 写入器 : OK")
+    except Exception as e:
+        print("cookie 写入器 : " + C_RED + str(e)[:120] + C_OFF)
+    st = load_state()
+    print("账号          : %d" % len(st["accounts"]))
+    for n in sorted(st["accounts"]):
+        a = st["accounts"][n]
+        print("   %-12s u%-12s copy=%-3s flags=%d" % (
+            n, a.get("user_id", "?"), "yes" if instance_ready(n) else "no",
+            len(a.get("flags") or {})))
+
+
+def cmd_status(argv):
+    cmd_doctor(argv)
+
+
+def cmd_accounts(argv):
+    st = load_state()
+    if not argv or argv[0] in ("list", "ls"):
+        if not st["accounts"]:
+            say("还没有账号：epmulti accounts add --name main --from-local")
+            return
+        for n, a in sorted(st["accounts"].items()):
+            print("%-14s u%-12s %-20s" % (n, a.get("user_id", "?"), a.get("username", "?")))
+        return
+
+    sub = argv[0]
+    if sub == "add":
+        name, cookie = None, None
+        from_local = "--from-local" in argv
+        stdin = "--cookie-stdin" in argv
+        clip = "--from-clipboard" in argv
+        for i, a in enumerate(argv):
+            if a == "--name" and i + 1 < len(argv):
+                name = argv[i + 1]
+            elif a.startswith("--name="):
+                name = a.split("=", 1)[1]
+        if not name:
+            die("缺少 --name")
+        if not re.match(r"^[A-Za-z0-9._-]{1,32}$", name):
+            die("名字只能用字母数字 . _ -（<=32）")
+        if stdin:
+            say("等待粘贴会话串，粘贴后按 Control-D：", C_DIM)
+            cookie = normalize_cookie(sys.stdin.read())
+        elif clip:
+            cookie = normalize_cookie(read_clipboard())
+        elif from_local:
+            cookie = local_roblox_cookie()
+        else:
+            die("指定会话来源：--from-local / --cookie-stdin / --from-clipboard\n" + COOKIE_HINT)
+        if not valid_cookie(cookie):
+            die("这不像 Roblox 会话串（应以 _|WARNING:-DO-NOT-SHARE-THIS. 开头）\n" + COOKIE_HINT)
+        say("校验会话…", C_DIM)
+        me, err = whoami(cookie)
+        if not me:
+            die("会话无效: " + str(err))
+        kc_set(name, cookie)
+        old = st["accounts"].get(name, {})
+        st["accounts"][name] = {
+            "user_id": me["user_id"], "username": me["username"],
+            "display_name": me["display_name"],
+            "added_at": old.get("added_at") or int(time.time() * 1000),
+            "flags": old.get("flags") or {},
+        }
+        save_state(st)
+        say("已添加 %s → u%s (%s)" % (name, me["user_id"], me["username"]), C_GRN)
+
+    elif sub in ("rm", "remove", "del"):
+        if len(argv) < 2:
+            die("用法: epmulti accounts rm NAME")
+        name = argv[1]
+        st["accounts"].pop(name, None)
+        save_state(st)
+        kc_del(name)
+        if os.path.exists(instance_dir(name)):
+            shutil.rmtree(instance_dir(name))
+        say("已删除账号 " + name)
+    else:
+        die("未知子命令: " + sub)
+
+
+def cmd_check(argv):
+    if not argv:
+        die("用法: epmulti check NAME")
+    name = argv[0]
+    cookie = kc_get(name)
+    if not cookie:
+        die("账号 %s 没有可用会话" % name)
+    me, err = whoami(cookie)
+    if not me:
+        die("会话已失效: " + str(err))
+    say("identity : u%s / %s" % (me["user_id"], me["username"]), C_GRN)
+    t, err = mint_ticket(cookie)
+    if not t:
+        die("取票失败: " + str(err))
+    say("ticket   : ok " + mask(t, 10), C_GRN)
+
+
+def cmd_flags(argv):
+    if not argv:
+        die("用法: epmulti flags NAME [--set K=V] [--unset K] [--clear]")
+    name = argv[0]
+    st = load_state()
+    acct = st["accounts"].get(name)
+    if not acct:
+        die(T("没有账号 ", "no account: ") + name)
+    flags = dict(acct.get("flags") or {})
+    changed = False
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a == "--set" and i + 1 < len(argv):
+            kv = argv[i + 1]
+            if "=" not in kv:
+                die("--set 需要 K=V")
+            k, v = kv.split("=", 1)
+            flags[k] = v
+            changed = True
+            i += 2
+            continue
+        if a == "--unset" and i + 1 < len(argv):
+            flags.pop(argv[i + 1], None)
+            changed = True
+            i += 2
+            continue
+        if a == "--clear":
+            flags = {}
+            changed = True
+        i += 1
+    if changed:
+        acct["flags"] = flags
+        save_state(st)
+        if instance_ready(name):
+            app = instance_app(name)
+            write_flags(app, flags)
+            run(["codesign", "--force", "--deep", "-s", "-", app])
+            say("已写入副本并重签", C_DIM)
+    if not flags:
+        say("（无 FFlags）")
+    for k in sorted(flags):
+        print("%-45s %s" % (k, flags[k]))
+
+
+def parse_size(s):
+    m = re.match(r"^(\d{3,4})[xX](\d{3,4})$", s or "")
+    if not m:
+        die(T("--size 需要 宽x高，如 1020x640", "--size needs WIDTHxHEIGHT, e.g. 1020x640"))
+    return (int(m.group(1)), int(m.group(2)))
+
+
+def cmd_launch(argv):
+    st = load_state()
+    if not st["accounts"]:
+        die("还没有账号：epmulti accounts add --name main --from-local")
+    place, size, fps, dry, names, snap = None, None, None, False, [], True
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--place" and i + 1 < len(argv):
+            place = argv[i + 1]
+            i += 2
+            continue
+        if a.startswith("--place="):
+            place = a.split("=", 1)[1]
+        elif a == "--size" and i + 1 < len(argv):
+            size = parse_size(argv[i + 1])
+            i += 2
+            continue
+        elif a.startswith("--size="):
+            size = parse_size(a.split("=", 1)[1])
+        elif a == "--fps" and i + 1 < len(argv):
+            fps = int(argv[i + 1])
+            i += 2
+            continue
+        elif a.startswith("--fps="):
+            fps = int(a.split("=", 1)[1])
+        elif a == "--no-snap":
+            snap = False
+        elif a == "--dry-run":
+            dry = True
+        elif a == "--all":
+            names = sorted(st["accounts"])
+        else:
+            names.append(a)
+        i += 1
+    if not names:
+        names = sorted(st["accounts"])
+    bad = [n for n in names if n not in st["accounts"]]
+    if bad:
+        die("没有这些账号: " + ", ".join(bad))
+
+    rc = 0
+    for idx, n in enumerate(names):
+        res = do_launch(n, st, place, dry, fps, size,
+                        slot=idx, total=len(names), snap=snap)
+        if not res.get("ok"):
+            say("启动 %s 失败: %s" % (n, res.get("error")), C_RED)
+            rc = 1
+            continue
+        if dry:
+            say("[dry-run] %s" % n, C_YEL)
+            print("   bundle : " + res["bundle_id"])
+            print("   flags  : " + (json.dumps(res["flags"]) if res["flags"] else "-"))
+            print("   size   : " + (str(res["size"]) if res["size"] else "-"))
+            print("   url    : " + res["url"][:150] + "…")
+            continue
+        say("启动 %s (u%s) pid=%s %s%s" % (
+            n, res.get("user_id"), res.get("pid"),
+            "会话已注入" if res.get("injected") else "注入失败: " + str(res.get("inject_detail")),
+            "" if not res.get("resized") else
+            ("  窗口=" + ("ok" if res["resized"]["ok"] else res["resized"]["detail"]))),
+            C_GRN if res.get("injected") else C_YEL)
+        time.sleep(0.8)
+    sys.exit(rc)
+
+
+def cmd_clean(argv):
+    keep = "--keep-copies" in argv
+    st = load_state()
+    for n in list(st["accounts"]):
+        kc_del(n)
+    st["accounts"] = {}
+    save_state(st)
+    if not keep and os.path.isdir(INSTANCES):
+        shutil.rmtree(INSTANCES)
+        say("已删除全部副本", C_DIM)
+    say("已清理 Keychain 条目与状态")
+
+
+
+# ------------------------------------------------------------------ FFlag 预设（中文）
+
+FFLAG_PRESETS = [
+    {
+        "id": "msaa", "group": "画质与性能", "group_en": "Graphics & Performance",
+        "kind": "select", "label": "抗锯齿（MSAA）", "label_en": "Anti-aliasing (MSAA)",
+        "desc": "越低越流畅，但物体边缘锯齿越明显。",
+        "desc_en": "Lower is faster, but edges get jaggier.",
+        "keys": ["FIntDebugForceMSAASamples"],
+        "options": [
+            {"label": "默认", "label_en": "Default", "set": {}},
+            {"label": "关（1x）", "label_en": "Off (1x)", "set": {"FIntDebugForceMSAASamples": "1"}},
+            {"label": "2x", "label_en": "2x", "set": {"FIntDebugForceMSAASamples": "2"}},
+            {"label": "4x", "label_en": "4x", "set": {"FIntDebugForceMSAASamples": "4"}},
+        ],
+    },
+    {
+        "id": "texture", "group": "画质与性能", "group_en": "Graphics & Performance",
+        "kind": "select", "label": "纹理质量", "label_en": "Texture quality",
+        "desc": "整体贴图清晰度。越低越省显存、越流畅。",
+        "desc_en": "Global texture detail. Lower saves VRAM and runs faster.",
+        "keys": ["DFFlagTextureQualityOverrideEnabled", "DFIntTextureQualityOverride"],
+        "options": [
+            {"label": "默认", "label_en": "Default", "set": {}},
+            {"label": "最低", "label_en": "Lowest", "set": {"DFFlagTextureQualityOverrideEnabled": "True", "DFIntTextureQualityOverride": "0"}},
+            {"label": "低", "label_en": "Low", "set": {"DFFlagTextureQualityOverrideEnabled": "True", "DFIntTextureQualityOverride": "1"}},
+            {"label": "中", "label_en": "Medium", "set": {"DFFlagTextureQualityOverrideEnabled": "True", "DFIntTextureQualityOverride": "2"}},
+            {"label": "高", "label_en": "High", "set": {"DFFlagTextureQualityOverrideEnabled": "True", "DFIntTextureQualityOverride": "3"}},
+        ],
+    },
+    {
+        "id": "lighting", "group": "画质与性能", "group_en": "Graphics & Performance",
+        "kind": "select", "label": "光照技术", "label_en": "Lighting technology",
+        "desc": "Voxel 最省性能；Future 最好看但最吃显卡。",
+        "desc_en": "Voxel is the cheapest; Future looks best but costs the most.",
+        "keys": ["DFFlagDebugRenderForceTechnologyVoxel",
+                 "FFlagDebugForceFutureIsBrightPhase2", "FFlagDebugForceFutureIsBrightPhase3"],
+        "options": [
+            {"label": "默认", "label_en": "Default", "set": {}},
+            {"label": "Voxel（最快）", "label_en": "Voxel (fastest)", "set": {"DFFlagDebugRenderForceTechnologyVoxel": "True"}},
+            {"label": "Future（最好看）", "label_en": "Future (best looking)", "set": {"FFlagDebugForceFutureIsBrightPhase2": "True",
+                                                "FFlagDebugForceFutureIsBrightPhase3": "True"}},
+        ],
+    },
+    {
+        "id": "fps", "group": "画质与性能", "group_en": "Graphics & Performance",
+        "kind": "select", "label": "帧率上限", "label_en": "FPS cap",
+        "desc": "限制最高帧数，越低越省电、越不烫。5–20 只适合挂机/多开，手动操作会明显卡。",
+        "desc_en": "Caps the frame rate. Lower = less heat and battery. 5–20 is only for AFK / many instances; normal play will feel choppy.",
+        "keys": ["DFIntTaskSchedulerTargetFps"],
+        "options": [
+            {"label": "默认（60）", "label_en": "Default (60)", "set": {}},
+            {"label": "5（挂机）", "label_en": "5 (AFK)", "set": {"DFIntTaskSchedulerTargetFps": "5"}},
+            {"label": "10（挂机）", "label_en": "10 (AFK)", "set": {"DFIntTaskSchedulerTargetFps": "10"}},
+            {"label": "15", "label_en": "15", "set": {"DFIntTaskSchedulerTargetFps": "15"}},
+            {"label": "20", "label_en": "20", "set": {"DFIntTaskSchedulerTargetFps": "20"}},
+            {"label": "25", "label_en": "25", "set": {"DFIntTaskSchedulerTargetFps": "25"}},
+            {"label": "30", "label_en": "30", "set": {"DFIntTaskSchedulerTargetFps": "30"}},
+            {"label": "45", "label_en": "45", "set": {"DFIntTaskSchedulerTargetFps": "45"}},
+            {"label": "60", "label_en": "60", "set": {"DFIntTaskSchedulerTargetFps": "60"}},
+            {"label": "90", "label_en": "90", "set": {"DFIntTaskSchedulerTargetFps": "90"}},
+            {"label": "120", "label_en": "120", "set": {"DFIntTaskSchedulerTargetFps": "120"}},
+            {"label": "144", "label_en": "144", "set": {"DFIntTaskSchedulerTargetFps": "144"}},
+            {"label": "240", "label_en": "240", "set": {"DFIntTaskSchedulerTargetFps": "240"}},
+        ],
+    },
+    {
+        "id": "res", "group": "画质与性能", "group_en": "Graphics & Performance",
+        "kind": "number", "label": "渲染分辨率（千像素）", "label_en": "Render resolution (kilopixels)",
+        "desc": "3D 画面内部按多少像素渲染，越小越快、越糊。留空 = 默认。例：500 ≈ 900×560。",
+        "desc_en": "Internal 3D resolution in kilopixels. Lower is faster and blurrier. Empty = default, e.g. 500 ≈ 900×560.",
+        "keys": ["DFIntDebugDynamicRenderKiloPixels"],
+    },
+    {
+        "id": "sky", "group": "极限性能（画面会变丑）", "group_en": "Max performance (uglier visuals)",
+        "kind": "toggle", "label": "灰色天空", "label_en": "Gray sky",
+        "desc": "把天空盒换成纯灰，省一点性能。",
+        "desc_en": "Replaces the skybox with flat gray to save a bit of performance.",
+        "set": {"FFlagDebugSkyGray": "True"},
+    },
+    {
+        "id": "grass", "group": "极限性能（画面会变丑）", "group_en": "Max performance (uglier visuals)",
+        "kind": "toggle", "label": "去掉草地", "label_en": "No grass",
+        "desc": "不渲染草丛，野外场景明显更流畅。",
+        "desc_en": "Stops rendering grass tufts; outdoor scenes run noticeably smoother.",
+        "set": {"FIntFRMMaxGrassDistance": "0", "FIntFRMMinGrassDistance": "0"},
+    },
+    {
+        "id": "frm", "group": "极限性能（画面会变丑）", "group_en": "Max performance (uglier visuals)",
+        "kind": "toggle", "label": "强制最低画质", "label_en": "Force lowest quality",
+        "desc": "把内部渲染质量压到最低档。",
+        "desc_en": "Pushes the internal render-quality tier to its lowest.",
+        "set": {"DFIntDebugFRMQualityLevelOverride": "1"},
+    },
+    {
+        "id": "dpi", "group": "窗口与显示", "group_en": "Window & display",
+        "kind": "toggle", "label": "关闭 DPI 缩放（高级）", "label_en": "Disable DPI scaling (advanced)",
+        "desc": "Retina 上按物理分辨率渲染：更清晰，但更吃性能，界面可能变小。",
+        "desc_en": "Renders at native resolution on Retina: sharper, heavier on the GPU, UI may look smaller.",
+        "set": {"DFFlagDisableDPIScale": "True"},
+    },
+]
+
+# 一键“性能优先”
+FFLAG_PERF_PRESET = {
+    "FIntDebugForceMSAASamples": "1",
+    "DFFlagTextureQualityOverrideEnabled": "True",
+    "DFIntTextureQualityOverride": "0",
+    "DFFlagDebugRenderForceTechnologyVoxel": "True",
+    "DFIntDebugFRMQualityLevelOverride": "1",
+    "FFlagDebugSkyGray": "True",
+    "FIntFRMMaxGrassDistance": "0",
+    "FIntFRMMinGrassDistance": "0",
+}
+
+# 预设管理的全部键（用于“恢复默认”）
+FFLAG_MANAGED_KEYS = sorted({k for p in FFLAG_PRESETS for k in
+                             (p.get("keys") or list((p.get("set") or {}).keys()))})
+
+
+def presets_payload():
+    groups = []
+    for p in FFLAG_PRESETS:
+        g = next((x for x in groups if x["title"] == p["group"]), None)
+        if not g:
+            g = {"title": p["group"], "title_en": p.get("group_en") or p["group"], "items": []}
+            groups.append(g)
+        item = {k: v for k, v in p.items() if k != "group"}
+        g["items"].append(item)
+    return groups
+
+
+ROBLOX_VERSION_URL = "https://clientsettingscdn.roblox.com/v2/client-version/MacPlayer/channel/LIVE"
+
+
+def _get_json(url, timeout=10):
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def roblox_versions():
+    """本机版本 vs 官方最新版本。"""
+    installed_short = None
+    r = run(["/usr/libexec/PlistBuddy", "-c", "Print :CFBundleShortVersionString",
+             os.path.join(ROBLOX_APP, "Contents", "Info.plist")])
+    if r.returncode == 0:
+        installed_short = r.stdout.strip()
+    latest = None
+    err = None
+    try:
+        latest = _get_json(ROBLOX_VERSION_URL).get("version")
+    except Exception as e:
+        err = str(e)[:120]
+    build = None
+    if latest:
+        parts = latest.split(".")
+        build = ".".join(parts[-2:]) if len(parts) >= 2 else latest
+    installed_build = ".".join(installed_short.split(".")[-2:]) if installed_short else None
+    return {"installed": installed_short, "installed_build": installed_build,
+            "latest": latest, "latest_build": build,
+            "update_available": bool(latest and installed_short and latest != installed_short),
+            "error": err}
+
+
+def account_pids(name):
+    app = instance_app(name)
+    pat = re.escape(os.path.join(app, "Contents", "MacOS", "RobloxPlayer"))
+    r = run(["pgrep", "-f", pat])
+    if r.returncode != 0:
+        return []
+    return [int(x) for x in r.stdout.split() if x.strip().isdigit()]
+
+
+def kill_pids(pids, wait=2.0):
+    for pid in pids:
+        try:
+            os.kill(pid, 15)
+        except Exception:
+            pass
+    end = time.time() + wait
+    while time.time() < end:
+        if not any(_alive(pid) for pid in pids):
+            return True
+        time.sleep(0.15)
+    for pid in pids:
+        try:
+            os.kill(pid, 9)
+        except Exception:
+            pass
+    return True
+
+
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+# ------------------------------------------------------------------ JSON API（给原生 app 用）
+
+def _api_args():
+    if sys.stdin is None or sys.stdin.isatty():
+        return {}
+    raw = sys.stdin.read().strip()
+    if not raw:
+        return {}
+    return json.loads(raw)
+
+
+def _accounts_payload():
+    st = load_state()
+    out = []
+    for n, a in sorted(st["accounts"].items()):
+        out.append({
+            "name": n,
+            "user_id": a.get("user_id"),
+            "username": a.get("username"),
+            "display_name": a.get("display_name"),
+            "added_at": a.get("added_at"),
+            "flags": a.get("flags") or {},
+            "prefs": a.get("prefs") or {},
+            "last_launch": a.get("last_launch") or {},
+            "instance_ready": instance_ready(n),
+        })
+    return out
+
+
+def cmd_api(argv):
+    global API_MODE, LOG_STREAM
+    API_MODE = True
+    LOG_STREAM = sys.stderr
+    verb = argv[0] if argv else "state"
+    try:
+        args = _api_args()
+    except Exception as e:
+        return emit({"ok": False, "error": T("参数不是合法 JSON: %s", "arguments are not valid JSON: %s") % e})
+
+    try:
+        if verb == "state":
+            c = local_roblox_cookie()
+            try:
+                ensure_helper()
+                helper = True
+            except Exception:
+                helper = False
+            return emit({"ok": True,
+                         "roblox_version": src_version(),
+                         "roblox_installed": os.path.isdir(ROBLOX_APP),
+                         "local_session": bool(c),
+                         "local_session_len": len(c) if c else 0,
+                         "clang": run(["clang", "--version"]).returncode == 0,
+                         "cookie_writer": helper,
+                         "accounts": _accounts_payload()})
+
+        if verb == "local_identity":
+            c = local_roblox_cookie()
+            if not c:
+                return emit({"ok": False, "error": T("本机没有 Roblox 会话", "no local Roblox session")})
+            me, err = whoami(c)
+            if not me:
+                return emit({"ok": False, "error": T("会话无效: %s", "invalid session: %s") % err})
+            return emit({"ok": True, "user_id": me["user_id"], "username": me["username"]})
+
+        if verb == "accounts":
+            return emit({"ok": True, "accounts": _accounts_payload()})
+
+        if verb == "add_auto":
+            cookie = normalize_cookie(args.get("cookie"))
+            if not valid_cookie(cookie):
+                return emit({"ok": False, "error": T(
+                    "没有抓到这个账号的登录态，请重新登录一次",
+                    "Could not capture a session — please sign in again")})
+            me, err = whoami(cookie)
+            if not me:
+                return emit({"ok": False, "error": T(
+                    "登录态无效（%s），请重新登录" % err,
+                    "session is not valid (%s) — please sign in again" % err)})
+            st = load_state()
+            # 同一个 Roblox 账号重复添加 = 刷新会话
+            for existing, a in st["accounts"].items():
+                if a.get("user_id") == me["user_id"]:
+                    kc_set(existing, cookie)
+                    a["username"] = me["username"]
+                    a["display_name"] = me["display_name"]
+                    save_state(st)
+                    return emit({"ok": True, "name": existing, "user_id": me["user_id"],
+                                 "username": me["username"], "updated": True})
+            base = re.sub(r"[^A-Za-z0-9._-]+", "-", (me["username"] or "").strip()).strip("-").lower()
+            base = (base or "account")[:28]
+            name, i = base, 2
+            while name in st["accounts"]:
+                name = "%s-%d" % (base, i)
+                i += 1
+            kc_set(name, cookie)
+            st["accounts"][name] = {"user_id": me["user_id"], "username": me["username"],
+                                    "display_name": me["display_name"],
+                                    "added_at": int(time.time() * 1000), "flags": {}}
+            save_state(st)
+            return emit({"ok": True, "name": name, "user_id": me["user_id"],
+                         "username": me["username"], "updated": False})
+
+        if verb in ("add", "add_local"):
+            name = (args.get("name") or "").strip()
+            if not re.match(r"^[A-Za-z0-9._-]{1,32}$", name):
+                return emit({"ok": False, "error": T("名字不合法（字母数字 . _ -，<=32）", "invalid name (letters, digits, . _ -, max 32)")})
+            cookie = local_roblox_cookie() if verb == "add_local" else normalize_cookie(args.get("cookie"))
+            if not valid_cookie(cookie):
+                return emit({"ok": False, "error": T("会话串格式不对（应以 _|WARNING:-DO-NOT-SHARE-THIS. 开头）", "malformed session string (must start with _|WARNING:-DO-NOT-SHARE-THIS.)")})
+            me, err = whoami(cookie)
+            if not me:
+                return emit({"ok": False, "error": T("会话无效: %s", "invalid session: %s") % err})
+            kc_set(name, cookie)
+            st = load_state()
+            old = st["accounts"].get(name, {})
+            st["accounts"][name] = {"user_id": me["user_id"], "username": me["username"],
+                                    "display_name": me["display_name"],
+                                    "added_at": old.get("added_at") or int(time.time() * 1000),
+                                    "flags": old.get("flags") or {}}
+            save_state(st)
+            return emit({"ok": True, "name": name, "user_id": me["user_id"],
+                         "username": me["username"]})
+
+        if verb == "rename":
+            old = (args.get("old") or "").strip()
+            new = (args.get("new") or "").strip()
+            if not re.match(r"^[A-Za-z0-9._-]{1,32}$", new):
+                return emit({"ok": False, "error": T(
+                    "新名字不合法（字母数字 . _ -，<=32）",
+                    "invalid name (letters, digits, . _ -, max 32)")})
+            st = load_state()
+            if old not in st["accounts"]:
+                return emit({"ok": False, "error": T("没有该账号", "no such account")})
+            if new == old:
+                return emit({"ok": True, "name": new})
+            if new in st["accounts"]:
+                return emit({"ok": False, "error": T("名字已被占用", "that name is already taken")})
+
+            acct = st["accounts"].pop(old)
+            cookie = kc_get(old)
+            if cookie:
+                kc_set(new, cookie)
+                kc_del(old)
+
+            old_dir, new_dir = instance_dir(old), instance_dir(new)
+            if os.path.isdir(old_dir) and not os.path.isdir(new_dir):
+                os.rename(old_dir, new_dir)
+                app = instance_app(new)
+                plist = os.path.join(app, "Contents", "Info.plist")
+                run(["/usr/libexec/PlistBuddy", "-c",
+                     "Set :CFBundleIdentifier " + bundle_id_for(new), plist])
+                run(["/usr/libexec/PlistBuddy", "-c",
+                     "Set :CFBundleName Roblox (" + new + ")", plist])
+                run(["codesign", "--force", "--deep", "-s", "-", app])
+                marker = os.path.join(new_dir, ".epmulti-ready")
+                try:
+                    m = json.load(open(marker))
+                    m["bundle_id"] = bundle_id_for(new)
+                    json.dump(m, open(marker, "w"))
+                except Exception:
+                    pass
+
+            old_jar = os.path.join(BIN, "jar-" + slug(old) + ".app")
+            if os.path.isdir(old_jar):
+                shutil.rmtree(old_jar, ignore_errors=True)
+
+            src_cookie = os.path.expanduser(
+                "~/Library/HTTPStorages/" + bundle_id_for(old) + ".binarycookies")
+            dst_cookie = os.path.expanduser(
+                "~/Library/HTTPStorages/" + bundle_id_for(new) + ".binarycookies")
+            if os.path.exists(src_cookie):
+                os.replace(src_cookie, dst_cookie)
+                os.chmod(dst_cookie, 0o600)
+
+            st["accounts"][new] = acct
+            save_state(st)
+            return emit({"ok": True, "name": new})
+
+        if verb == "reveal":
+            name = args.get("name")
+            d = instance_dir(name)
+            target = d if os.path.isdir(d) else BASE
+            run(["open", target])
+            return emit({"ok": True, "path": target})
+
+        if verb == "rm":
+            name = args.get("name")
+            st = load_state()
+            st["accounts"].pop(name, None)
+            save_state(st)
+            kc_del(name)
+            if name and os.path.exists(instance_dir(name)):
+                shutil.rmtree(instance_dir(name))
+            return emit({"ok": True})
+
+        if verb == "check":
+            name = args.get("name")
+            cookie = kc_get(name)
+            if not cookie:
+                return emit({"ok": False, "error": T("该账号没有会话", "this account has no session")})
+            me, err = whoami(cookie)
+            if not me:
+                return emit({"ok": False, "error": T("会话已失效: %s", "session expired: %s") % err})
+            t, err = mint_ticket(cookie)
+            if not t:
+                return emit({"ok": False, "error": T("取票失败: %s", "ticket failed: %s") % err,
+                             "user_id": me["user_id"], "username": me["username"]})
+            return emit({"ok": True, "user_id": me["user_id"], "username": me["username"],
+                         "ticket_len": len(t)})
+
+        if verb == "flags_get":
+            st = load_state()
+            a = st["accounts"].get(args.get("name"))
+            if not a:
+                return emit({"ok": False, "error": T("没有该账号", "no such account")})
+            return emit({"ok": True, "flags": a.get("flags") or {}})
+
+        if verb == "flags_set":
+            name = args.get("name")
+            flags = args.get("flags") or {}
+            st = load_state()
+            a = st["accounts"].get(name)
+            if not a:
+                return emit({"ok": False, "error": T("没有该账号", "no such account")})
+            a["flags"] = {str(k): str(v) for k, v in flags.items()}
+            save_state(st)
+            if instance_ready(name):
+                app = instance_app(name)
+                write_flags(app, a["flags"])
+                run(["codesign", "--force", "--deep", "-s", "-", app])
+            return emit({"ok": True, "flags": a["flags"]})
+
+        if verb == "launch":
+            st = load_state()
+            size = args.get("size")
+            if isinstance(size, str) and size.strip():
+                size = parse_size(size.strip())
+            elif not isinstance(size, (list, tuple)):
+                size = None
+            fps = args.get("fps")
+            fps = int(fps) if fps not in (None, "", 0, "0") else None
+            res = do_launch(args.get("name"), st, args.get("place") or None,
+                            False, fps, size,
+                            slot=int(args.get("slot") or 0),
+                            total=int(args.get("total") or 1),
+                            snap=bool(args.get("snap", True)))
+            return emit(res)
+
+        if verb == "launch_all":
+            st = load_state()
+            size = args.get("size")
+            size = parse_size(size.strip()) if isinstance(size, str) and size.strip() else None
+            fps = args.get("fps")
+            fps = int(fps) if fps not in (None, "", 0, "0") else None
+            snap = bool(args.get("snap", True))
+            names = sorted(st["accounts"])
+            out = []
+            for i, nm in enumerate(names):
+                out.append(do_launch(nm, st, args.get("place") or None, False, fps, size,
+                                     slot=i, total=len(names), snap=snap))
+                time.sleep(0.8)
+            return emit({"ok": True, "results": out})
+
+        if verb == "presets":
+            return emit({"ok": True, "groups": presets_payload(),
+                         "perf_preset": FFLAG_PERF_PRESET,
+                         "managed_keys": FFLAG_MANAGED_KEYS})
+
+        if verb == "apply_perf":
+            name = args.get("name")
+            st = load_state()
+            a = st["accounts"].get(name)
+            if not a:
+                return emit({"ok": False, "error": T("没有该账号", "no such account")})
+            flags = dict(a.get("flags") or {})
+            for k in FFLAG_MANAGED_KEYS:
+                flags.pop(k, None)
+            flags.update(FFLAG_PERF_PRESET)
+            a["flags"] = flags
+            save_state(st)
+            if instance_ready(name):
+                app = instance_app(name)
+                write_flags(app, flags)
+                run(["codesign", "--force", "--deep", "-s", "-", app])
+            return emit({"ok": True, "flags": flags})
+
+        if verb == "reset_flags":
+            name = args.get("name")
+            st = load_state()
+            a = st["accounts"].get(name)
+            if not a:
+                return emit({"ok": False, "error": T("没有该账号", "no such account")})
+            flags = {k: v for k, v in (a.get("flags") or {}).items()
+                     if k not in FFLAG_MANAGED_KEYS}
+            a["flags"] = flags
+            save_state(st)
+            if instance_ready(name):
+                app = instance_app(name)
+                write_flags(app, flags)
+                run(["codesign", "--force", "--deep", "-s", "-", app])
+            return emit({"ok": True, "flags": flags})
+
+        if verb == "instances":
+            st = load_state()
+            out = []
+            for name, a in sorted(st["accounts"].items()):
+                pids = account_pids(name)
+                if pids:
+                    out.append({"name": name, "pids": pids,
+                                "place": (a.get("prefs") or {}).get("place"),
+                                "started_at": (a.get("last_launch") or {}).get("at")})
+            return emit({"ok": True, "instances": out})
+
+        if verb == "stop":
+            name = args.get("name")
+            pids = account_pids(name)
+            kill_pids(pids)
+            return emit({"ok": True, "stopped": pids})
+
+        if verb == "stop_all":
+            st = load_state()
+            killed = {}
+            for name in st["accounts"]:
+                pids = account_pids(name)
+                if pids:
+                    kill_pids(pids)
+                    killed[name] = pids
+            return emit({"ok": True, "stopped": killed})
+
+        if verb == "set_prefs":
+            name = args.get("name")
+            st = load_state()
+            a = st["accounts"].get(name)
+            if not a:
+                return emit({"ok": False, "error": T("没有该账号", "no such account")})
+            prefs = a.get("prefs") or {}
+            for k in ("place", "size", "fps"):
+                if k in args:
+                    v = args.get(k)
+                    if v in (None, "", 0):
+                        prefs.pop(k, None)
+                    else:
+                        prefs[k] = str(v)
+            a["prefs"] = prefs
+            save_state(st)
+            return emit({"ok": True, "prefs": prefs})
+
+        if verb == "version":
+            return emit({"ok": True, **roblox_versions()})
+
+        if verb == "place_name":
+            key = str(args.get("place") or "").strip()
+            if not key.isdigit():
+                return emit({"ok": False, "error": T("placeId 不是数字", "placeId is not numeric")})
+            st = load_state()
+            cache = st.setdefault("place_names", {})
+            if key in cache:
+                return emit({"ok": True, "name": cache[key], "cached": True})
+            try:
+                uni = _get_json("https://apis.roblox.com/universes/v1/places/%s/universe" % key)["universeId"]
+                data = _get_json("https://games.roblox.com/v1/games?universeIds=%s" % uni)
+                nm = data["data"][0]["name"]
+                cache[key] = nm
+                save_state(st)
+                return emit({"ok": True, "name": nm, "cached": False})
+            except Exception as e:
+                return emit({"ok": False, "error": str(e)[:120]})
+
+        if verb == "open_instances":
+            os.makedirs(INSTANCES, exist_ok=True)
+            run(["open", INSTANCES])
+            return emit({"ok": True, "path": INSTANCES})
+
+        return emit({"ok": False, "error": T("未知 api: ", "unknown api: ") + verb})
+    except ApiError as e:
+        return emit({"ok": False, "error": str(e)})
+    except SystemExit:
+        return emit({"ok": False, "error": T("参数解析失败", "argument parsing failed")})
+    except Exception as e:
+        return emit({"ok": False, "error": "%s: %s" % (type(e).__name__, str(e)[:300])})
+
+
+# ------------------------------------------------------------------ GUI
+
+GUI_HTML = r"""<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<title>epmulti</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+*{box-sizing:border-box}body{margin:0;background:#0E0E10;color:#fff;font:14px/1.6 -apple-system,system-ui}
+.wrap{max-width:820px;margin:0 auto;padding:28px 20px 60px}
+h1{font-size:20px;margin:0 0 4px}h1 span{color:#6b7280;font-size:12px;font-weight:400}
+.card{background:#1c1d21;border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:16px;margin:14px 0}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.acc{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#26272c;border-radius:9px;margin:6px 0}
+.acc b{font-weight:600}.muted{color:#8b8f9a;font-size:12px}
+input,button{font:inherit;border-radius:8px;border:1px solid #34353c;background:#121214;color:#fff;padding:8px 10px}
+input{flex:1;min-width:120px}
+button{background:#26272c;cursor:pointer}button:hover{background:#303138}
+button.primary{background:#2563eb;border-color:#2563eb}button.primary:hover{background:#1d4ed8}
+button.danger{background:#3b1d1d;border-color:#5b2a2a;color:#ffb4b4}
+pre{background:#121214;border:1px solid #242529;border-radius:8px;padding:10px;overflow:auto;max-height:320px;font-size:12px}
+</style></head><body><div class="wrap">
+<h1>epmulti <span>本地 Roblox 多开 · 免登录</span></h1>
+<div class="card">
+  <div class="row"><input id="place" placeholder="placeId（可留空，只开客户端首页）">
+  <input id="size" placeholder="窗口 1020x640" style="max-width:170px">
+  <input id="fps" placeholder="fps" style="max-width:100px"></div>
+  <div class="row" style="margin-top:10px">
+    <button class="primary" onclick="launchAll()">全部启动</button>
+    <button onclick="refresh()">刷新</button>
+    <span class="muted" id="hint"></span>
+  </div>
+</div>
+<div class="card" id="accounts"><div class="muted">加载中…</div></div>
+<div class="card">
+  <div class="muted" style="margin-bottom:8px">新增账号：粘贴 <code>.ROBLOSECURITY</code> 会话串（只在本机使用）</div>
+  <div class="row"><input id="name" placeholder="账号名，如 alt" style="max-width:160px">
+  <input id="cookie" placeholder="_|WARNING:-DO-NOT-SHARE-THIS.…"></div>
+  <div class="row" style="margin-top:10px">
+    <button class="primary" onclick="addAccount()">添加</button>
+    <button onclick="addFromLocal()">导入本机会话</button>
+  </div>
+</div>
+<div class="card"><div class="muted" style="margin-bottom:6px">输出</div><pre id="log"></pre></div>
+</div>
+<script>
+const TOKEN = new URLSearchParams(location.search).get('t') || '';
+const api = (p, body) => fetch(p + (p.includes('?')?'&':'?') + 't=' + TOKEN, {
+  method: body ? 'POST' : 'GET',
+  headers: {'Content-Type':'application/json'},
+  body: body ? JSON.stringify(body) : undefined
+}).then(r => r.json());
+function log(x){ const el=document.getElementById('log');
+  el.textContent += (typeof x==='string'?x:JSON.stringify(x,null,1)) + "\n";
+  el.scrollTop = el.scrollHeight; }
+function refresh(){
+  api('/api/accounts').then(d=>{
+    const box=document.getElementById('accounts');
+    if(!d.accounts.length){ box.innerHTML='<div class="muted">还没有账号</div>'; return; }
+    box.innerHTML = d.accounts.map(a=>`
+      <div class="acc"><div><b>${a.name}</b>
+        <div class="muted">u${a.user_id} · ${a.username} · ${a.instance_ready?'副本已就绪':'副本未创建'} · flags ${a.flags}</div></div>
+        <div class="row"><button onclick="launchOne('${a.name}')">启动</button>
+        <button class="danger" onclick="rm('${a.name}')">删除</button></div></div>`).join('');
+  }).catch(e=>log('读取失败: '+e));
+}
+function params(){
+  return {place:document.getElementById('place').value.trim()||null,
+          size:document.getElementById('size').value.trim()||null,
+          fps:document.getElementById('fps').value.trim()||null};
+}
+function launchOne(n){ log('启动 '+n+' …');
+  api('/api/launch', Object.assign({name:n}, params())).then(d=>{log(d);refresh();}); }
+function launchAll(){ log('全部启动 …');
+  api('/api/launch_all', params()).then(d=>{log(d);refresh();}); }
+function addAccount(){
+  const name=document.getElementById('name').value.trim();
+  const cookie=document.getElementById('cookie').value.trim();
+  if(!name||!cookie) return log('名字和会话串都要填');
+  api('/api/add',{name,cookie}).then(d=>{log(d);document.getElementById('cookie').value='';refresh();});
+}
+function addFromLocal(){
+  const name=document.getElementById('name').value.trim()||'main';
+  api('/api/add_local',{name}).then(d=>{log(d);refresh();});
+}
+function rm(n){ if(!confirm('删除 '+n+' ?'))return; api('/api/rm',{name:n}).then(d=>{log(d);refresh();}); }
+refresh();
+</script></body></html>"""
+
+
+def _json(handler, obj, code=200):
+    body = json.dumps(obj, ensure_ascii=False).encode()
+    handler.send_response(code)
+    handler.send_header("Content-Type", "application/json; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def make_handler(token):
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _tok(self, q):
+            return q.get("t", [""])[0] == token
+
+        def do_GET(self):
+            u = urllib.parse.urlparse(self.path)
+            q = urllib.parse.parse_qs(u.query)
+            if u.path == "/":
+                if not self._tok(q):
+                    self.send_response(403)
+                    self.end_headers()
+                    self.wfile.write(b"forbidden")
+                    return
+                body = GUI_HTML.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if u.path == "/api/accounts":
+                if not self._tok(q):
+                    return _json(self, {"error": "forbidden"}, 403)
+                st = load_state()
+                accts = [{"name": n, "user_id": a.get("user_id"), "username": a.get("username"),
+                          "instance_ready": instance_ready(n),
+                          "flags": len(a.get("flags") or {})}
+                         for n, a in sorted(st["accounts"].items())]
+                return _json(self, {"accounts": accts})
+            _json(self, {"error": "not found"}, 404)
+
+        def do_POST(self):
+            u = urllib.parse.urlparse(self.path)
+            q = urllib.parse.parse_qs(u.query)
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                body = json.loads(self.rfile.read(n) or b"{}")
+            except Exception:
+                body = {}
+            if not self._tok(q):
+                return _json(self, {"error": "forbidden"}, 403)
+            st = load_state()
+            try:
+                if u.path == "/api/launch":
+                    place = body.get("place") or None
+                    size = parse_size(body["size"]) if body.get("size") else None
+                    fps = int(body["fps"]) if body.get("fps") else None
+                    slot = int(body.get("slot") or 0)
+                    total = int(body.get("total") or 1)
+                    return _json(self, do_launch(body["name"], st, place, False, fps, size,
+                                                 slot=slot, total=total,
+                                                 snap=bool(body.get("snap", True))))
+                if u.path == "/api/launch_all":
+                    place = body.get("place") or None
+                    size = parse_size(body["size"]) if body.get("size") else None
+                    fps = int(body["fps"]) if body.get("fps") else None
+                    out = []
+                    names = sorted(st["accounts"])
+                    for i, nm in enumerate(names):
+                        out.append(do_launch(nm, st, place, False, fps, size,
+                                             slot=i, total=len(names),
+                                             snap=bool(body.get("snap", True))))
+                        time.sleep(0.8)
+                    return _json(self, out)
+                if u.path == "/api/add":
+                    cookie = normalize_cookie(body.get("cookie"))
+                    name = (body.get("name") or "").strip()
+                    if not re.match(r"^[A-Za-z0-9._-]{1,32}$", name):
+                        return _json(self, {"ok": False, "error": "名字不合法"})
+                    if not valid_cookie(cookie):
+                        return _json(self, {"ok": False, "error": "会话串格式不对"})
+                    me, err = whoami(cookie)
+                    if not me:
+                        return _json(self, {"ok": False, "error": T("会话无效: %s", "invalid session: %s") % err})
+                    kc_set(name, cookie)
+                    old = st["accounts"].get(name, {})
+                    st["accounts"][name] = {"user_id": me["user_id"],
+                                            "username": me["username"],
+                                            "display_name": me["display_name"],
+                                            "added_at": old.get("added_at") or int(time.time() * 1000),
+                                            "flags": old.get("flags") or {}}
+                    save_state(st)
+                    return _json(self, {"ok": True, "user_id": me["user_id"],
+                                        "username": me["username"]})
+                if u.path == "/api/add_local":
+                    cookie = local_roblox_cookie()
+                    if not cookie:
+                        return _json(self, {"ok": False, "error": T("本机没有 Roblox 会话", "no local Roblox session")})
+                    name = (body.get("name") or "main").strip()
+                    me, err = whoami(cookie)
+                    if not me:
+                        return _json(self, {"ok": False, "error": T("会话无效: %s", "invalid session: %s") % err})
+                    kc_set(name, cookie)
+                    old = st["accounts"].get(name, {})
+                    st["accounts"][name] = {"user_id": me["user_id"],
+                                            "username": me["username"],
+                                            "display_name": me["display_name"],
+                                            "added_at": old.get("added_at") or int(time.time() * 1000),
+                                            "flags": old.get("flags") or {}}
+                    save_state(st)
+                    return _json(self, {"ok": True, "user_id": me["user_id"],
+                                        "username": me["username"]})
+                if u.path == "/api/rm":
+                    name = body.get("name")
+                    st["accounts"].pop(name, None)
+                    save_state(st)
+                    kc_del(name)
+                    if os.path.exists(instance_dir(name)):
+                        shutil.rmtree(instance_dir(name))
+                    return _json(self, {"ok": True})
+            except SystemExit:
+                return _json(self, {"ok": False, "error": T("参数解析失败", "argument parsing failed")})
+            except Exception as e:
+                return _json(self, {"ok": False, "error": str(e)[:300]})
+            _json(self, {"error": "not found"}, 404)
+
+    return H
+
+
+def cmd_gui(argv):
+    token = base64.urlsafe_b64encode(os.urandom(12)).decode().rstrip("=")
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    url = "http://127.0.0.1:%d/?t=%s" % (port, token)
+    srv = HTTPServer(("127.0.0.1", port), make_handler(token))
+    say("GUI: " + url, C_GRN)
+    say("（只监听 127.0.0.1；Ctrl-C 结束）", C_DIM)
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        say("\nbye")
+
+
+# ------------------------------------------------------------------ main
+
+def main():
+    argv = sys.argv[1:]
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return
+    cmd, rest = argv[0], argv[1:]
+    table = {
+        "status": cmd_status, "doctor": cmd_doctor,
+        "accounts": cmd_accounts, "account": cmd_accounts, "acct": cmd_accounts,
+        "check": cmd_check, "flags": cmd_flags,
+        "launch": cmd_launch, "run": cmd_launch,
+        "gui": cmd_gui, "clean": cmd_clean, "api": cmd_api,
+    }
+    if cmd not in table:
+        die("未知命令: " + cmd + "（用 --help 看用法）")
+    table[cmd](rest)
+
+
+if __name__ == "__main__":
+    main()

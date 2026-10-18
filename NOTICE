@@ -1,0 +1,13 @@
+Third-party components
+======================
+
+1. CPython 3.12.15 (bundled runtime)
+   Source: python-build-standalone (https://github.com/astral-sh/python-build-standalone)
+   License: Python Software Foundation License 2.0
+   The MIT license above applies to this repository's own code, not to CPython.
+
+2. Roblox
+   This project is not affiliated with, endorsed by, or sponsored by Roblox
+   Corporation. "Roblox" is a trademark of Roblox Corporation. The app clones
+   the locally installed Roblox client at runtime; no Roblox binaries are
+   distributed in this repository or in the release DMG.
