@@ -23,7 +23,8 @@ final class PreviewModel: ObservableObject {
         denied = false
         note = nil
         timer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-            Task { await self?.tick() }
+            guard let self else { return }
+            Task { @MainActor in await self.tick() }
         }
         RunLoop.main.add(timer!, forMode: .common)
         Task { await tick() }

@@ -97,7 +97,17 @@ TXT
 
 rm -f "$DMG"
 echo "▸ 生成 DMG"
-hdiutil create -volname "Roost $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
-rm -rf "$STAGE"
+# 不用 -srcfolder：在 CI runner 上会偶发 "Resource busy"。
+# 改成：建空镜像 → 挂载 → 拷贝 → 卸载 → 压缩。
+TMP_DMG="$(mktemp -d)/roost-tmp.dmg"
+MNT="$(mktemp -d)"
+SIZE_MB=$(( $(du -sm "$STAGE" | cut -f1) + 40 ))
+hdiutil create -size "${SIZE_MB}m" -fs HFS+ -volname "Roost $VERSION" -ov "$TMP_DMG" >/dev/null
+hdiutil attach "$TMP_DMG" -mountpoint "$MNT" -nobrowse -quiet
+cp -R "$STAGE"/. "$MNT"/
+sync
+hdiutil detach "$MNT" -quiet
+hdiutil convert "$TMP_DMG" -format UDZO -o "$DMG" >/dev/null
+rm -rf "$STAGE" "$MNT" "$(dirname "$TMP_DMG")"
 echo "✓ $DMG"
 ls -lh "$DMG" | awk '{print "  体积: "$5}'
