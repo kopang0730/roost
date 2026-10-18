@@ -6,13 +6,15 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 VERSION="${1:-${VERSION:-1.0.0}}"
 export VERSION
 DMG="$HERE/build/Roost-$VERSION.dmg"
+mkdir -p "$HERE/build"
 
 "$HERE/build.sh"
 echo "▸ 组装 DMG 内容"
 STAGE="$(mktemp -d)"
-cp -R "$HERE/build/Roost.app" "$STAGE/"
+APP_PATH="$(cat "$HERE/build/app-path.txt")"
+cp -R "$APP_PATH" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
-cat > "$STAGE/第一次打开看这里.txt" <<'TXT'
+cat > "$STAGE/第一次打开看这里（中文）.txt" <<'TXT'
 Roost —— 本地 Roblox 多开器
 ==============================
 
@@ -51,6 +53,48 @@ Roost —— 本地 Roblox 多开器
 - 不联网校验授权，没有账号体系，纯本地工具
 - 多开属于 Roblox 不鼓励的行为，使用风险自负
 TXT
+
+cat > "$STAGE/Read me first (English).txt" <<'TXT'
+Roost — a local Roblox multi-instance launcher
+==============================================
+
+Install
+-------
+Drag Roost.app into the Applications folder on the right.
+
+First launch will be blocked by macOS (this app is not notarized)
+-----------------------------------------------------------------
+If you see "cannot be opened because the developer cannot be verified",
+choose one:
+
+  1) In Applications, right-click Roost.app → Open → Open again
+  2) Or open Terminal and run:
+       xattr -dr com.apple.quarantine /Applications/Roost.app
+  3) Or System Settings → Privacy & Security → "Open Anyway" at the bottom
+
+Usage
+-----
+1. Click + in the toolbar, then sign in to Roblox in the window (2FA supported)
+2. The account is added automatically once you are signed in
+3. Set placeId / window size / fps, then click Launch
+4. Click Preview to see live thumbnails of every running instance
+   (requires Screen Recording permission the first time)
+5. Window size and auto-arrange need Accessibility permission
+
+Requirements
+------------
+- macOS 13 or later
+- Apple Silicon (M1/M2/M3/M4). Intel Macs are not supported.
+- First run creates ~/Library/Application Support/epmulti
+
+Notes
+-----
+- Sessions live in the macOS Keychain (svce=epmulti) and are never uploaded
+- No account system, no servers, no licensing checks — fully local
+- Multi-instancing is not endorsed by Roblox; use at your own risk
+- Source code and issue tracker: the GitHub repository for this project
+TXT
+
 rm -f "$DMG"
 echo "▸ 生成 DMG"
 hdiutil create -volname "Roost $VERSION" -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null

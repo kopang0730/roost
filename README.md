@@ -77,9 +77,14 @@ scripts/fetch-python.sh  # 拉取内置 Python 运行时（裁剪版）
 
 ```bash
 ./scripts/fetch-python.sh     # 只需一次，约 25 MB 下载
-cd app && ./build.sh          # → app/build/Roost.app
+cd app && ./build.sh          # 编译 + 打包 + 签名
 ./make-dmg.sh 1.0.0           # → app/build/Roost-1.0.0.dmg
 ```
+
+> 构建产物默认放在 `$TMPDIR/roost-build/`（路径会写进 `app/build/app-path.txt`），
+> 不放在仓库里。因为仓库常在 iCloud Drive 下，fileprovider 会反复给 `.app` 写
+> `com.apple.FinderInfo`，导致 `codesign --deep --strict` 校验失败。
+> 想改目录：`ROOST_BUILD_DIR=/some/path ./build.sh`。
 
 命令行直接用（不装 app 也行）：
 

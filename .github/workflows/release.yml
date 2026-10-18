@@ -36,7 +36,8 @@ jobs:
 
       - name: 自检
         run: |
-          codesign --verify --deep --strict "app/build/Roost.app"
+          APP_PATH="$(cat app/build/app-path.txt)"
+          codesign --verify --deep --strict "$APP_PATH"
           hdiutil attach "app/build/Roost-${{ steps.ver.outputs.version }}.dmg" -nobrowse -quiet
           test -d "/Volumes/Roost ${{ steps.ver.outputs.version }}/Roost.app"
           hdiutil detach "/Volumes/Roost ${{ steps.ver.outputs.version }}" -quiet

@@ -7,7 +7,9 @@ ROOT="$(cd "$HERE/.." && pwd)"
 APP_NAME="Roost"
 VERSION="${VERSION:-1.0.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-1}"
-BUILD="$HERE/build"
+# 构建产物放到 iCloud/文件提供程序同步目录之外：
+# 否则 com.apple.FinderInfo / fileprovider xattr 会被反复写回，导致 codesign 校验失败
+BUILD="${ROOST_BUILD_DIR:-${TMPDIR:-/tmp}/roost-build}"
 BUNDLE="$BUILD/$APP_NAME.app"
 
 echo "▸ 清理"
@@ -86,5 +88,7 @@ echo "▸ 签名（ad-hoc）"
 xattr -cr "$BUNDLE"
 codesign --force --deep -s - "$BUNDLE" >/dev/null
 
+mkdir -p "$HERE/build"
+echo "$BUNDLE" > "$HERE/build/app-path.txt"
 echo "✓ 完成: $BUNDLE"
 du -sh "$BUNDLE" | awk '{print "  体积: "$1}'
